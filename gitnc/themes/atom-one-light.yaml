@@ -1,0 +1,95 @@
+# Textual theme palette. These fields are forwarded to textual.theme.Theme,
+# which colors the application chrome (borders, buttons, headers, scrollbars).
+# `name` is the identifier shown in the Theme menu and persisted in settings.json.
+# Color values accept any CSS-style color (hex, ansi_*, rgb()).
+name: atom-one-light
+primary: '#4078F2'
+secondary: '#A626A4'
+warning: '#D8D938'
+error: '#F23F3F'
+success: '#6CF23F'
+accent: '#bf9232'
+foreground: '#383A42'
+background: '#FAFAFA'
+surface: '#E0E0E0'
+panel: '#CCCCCC'
+boost: null
+
+# Theme behavior flags.
+# `dark` selects dark-mode contrast defaults inside Textual.
+# `luminosity_spread` / `text_alpha` tune Textual's automatic shade derivation.
+# `variables` are passed through to Textual's CSS variable table
+# (use kebab-case keys, e.g. `block-cursor-foreground`).
+# `ansi: true` opts the theme into the terminal's own ANSI palette
+# instead of fixed hex colors.
+dark: false
+luminosity_spread: 0.15
+text_alpha: 0.95
+variables: {}
+ansi: false
+
+# Status-code colors painted in the Status column of the file list.
+# Values are Rich style strings (e.g. "bold yellow", "#ff8800").
+status_modified: bold yellow
+status_type_changed: 'bold #ff8800'
+status_added: bold green
+status_deleted: bold red
+status_renamed: bold cyan
+status_copied: bold blue
+status_unmerged: 'bold #ff5555'
+status_untracked: bold white
+status_ignored: '#888888'
+status_submodule: bold magenta
+
+# Diff line rendering inside FileDiff.
+# Added/removed lines get a foreground color and a dimmer matching line-number gutter.
+diff_added_line: green
+diff_added_line_number: green dim
+diff_removed_line: red
+diff_removed_line_number: red dim
+diff_context_line_number: dim
+
+# Commit detail rendering inside CommitDetail (git show output).
+# The commit/Author/Date header block, and the @@ hunk markers of a patch.
+commit_header_line: bold
+diff_hunk_header: cyan
+
+# Y/N hint shown at the bottom of the confirm dialog.
+confirm_yes_key: b green
+confirm_no_key: b red
+
+# Warning text shown above the file list (e.g. submodule branch mismatches).
+warning_text: bold red
+
+# Faint hint text at the bottom of dialogs (e.g. "(Esc cancels)").
+dialog_hint: dim
+
+# Accelerator letter highlighted in the menu bar and in dropdown entries.
+# Must stay readable on the menu bar ($menu-bar-background) and dropdown ($panel)
+# backgrounds.
+menu_mnemonic: bold underline
+
+# Settings dialog checkbox mark color.
+checkbox_mark: green
+
+# Settings dialog text caret. It is drawn on the cell it sits on, so it
+# swaps that cell's colors instead of painting one of its own.
+text_caret: reverse
+
+# Chrome colors for the menu bar and the footer. The defaults are Textual's
+# own Header/Footer palette, so the bars match every other Textual app.
+# Values may reference this theme's palette fields with `$name`.
+menu_bar_background: $panel
+menu_bar_foreground: $foreground
+footer_background: $panel
+footer_foreground: $foreground
+
+# CSS variables emitted for the file-list cursor and multi-selection.
+# Values may reference Textual palette variables with `$name` (e.g. `$primary`).
+# References are resolved against this theme's own fields when the CSS is generated.
+cursor_row_background: $primary
+cursor_row_foreground: $foreground
+selected_file_background: $warning 30%
+selected_file_foreground: $success
+selected_cursor_row_background: $primary
+selected_cursor_row_foreground: $success
