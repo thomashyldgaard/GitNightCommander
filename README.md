@@ -146,9 +146,9 @@ must be on your `PATH`.
 After `hatch build`, install one of the files it wrote into `dist/`:
 
 ```sh
-pipx install dist/gitnc-0.1.0-py3-none-any.whl
+pipx install dist/gitnc-0.1.1-py3-none-any.whl
 # or
-pip install --user dist/gitnc-0.1.0.tar.gz
+pip install --user dist/gitnc-0.1.1.tar.gz
 ```
 
 Substitute the version in the filename for whatever `hatch build` produced.
