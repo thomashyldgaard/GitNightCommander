@@ -12,6 +12,11 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/thomashyldgaard/GitNightCommander"
+Source = "https://github.com/thomashyldgaard/GitNightCommander"
+Issues = "https://github.com/thomashyldgaard/GitNightCommander/issues"
+
 [project.optional-dependencies]
 dev = [
     "ruff>=0.6.0",
