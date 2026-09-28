@@ -79,6 +79,12 @@ checkbox_mark: green
 # swaps that cell's colors instead of painting one of its own.
 text_caret: reverse
 
+# Selected text in the commit message box (Shift+arrows). Textual's default,
+# $primary at 40% over the background, is blue on blue here; this is
+# mcedit's marked-block look instead: the theme's dark blue on its cyan.
+text_selection_background: $warning
+text_selection_foreground: $background
+
 # Chrome colors for the menu bar and the footer. Midnight Commander paints
 # both bars in the theme's cyan ($warning) with the background color as text,
 # instead of the muted $panel bar Textual apps use by default.

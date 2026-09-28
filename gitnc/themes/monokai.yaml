@@ -27,7 +27,6 @@ luminosity_spread: 0.15
 text_alpha: 0.95
 variables:
   foreground-muted: '#797979'
-  input-selection-background: '#575b6190'
   button-color-foreground: '#272822'
 ansi: false
 
@@ -78,6 +77,11 @@ checkbox_mark: green
 # Settings dialog text caret. It is drawn on the cell it sits on, so it
 # swaps that cell's colors instead of painting one of its own.
 text_caret: reverse
+
+# Selected text in the commit message box (Shift+arrows). Empty keeps
+# Textual's default: $primary lightened at 40% opacity over the background.
+text_selection_background: '#575b6190'
+text_selection_foreground: ''
 
 # Chrome colors for the menu bar and the footer. The defaults are Textual's
 # own Header/Footer palette, so the bars match every other Textual app.

@@ -97,6 +97,15 @@ class UITheme:
     # cell's colors: a color of its own would hide the character under it.
     text_caret: str = "reverse"
 
+    # Selected text in the text inputs — the commit message box and any other
+    # TextArea / Input. Emitted as Textual's own `$input-selection-background`
+    # / `$input-selection-foreground`, so they need no CSS of the app's own.
+    # Empty keeps Textual's default, `$primary` lightened at 40% opacity over
+    # the background — which all but vanishes in a theme whose primary and
+    # background are neighbouring shades of one color.
+    text_selection_background: str = ""
+    text_selection_foreground: str = ""
+
     # CSS-side palette for the menu bar and the footer. The defaults are
     # Textual's own Header/Footer palette, so a theme that says nothing about
     # the chrome gets the bars every other Textual app has. A theme after a
@@ -161,7 +170,15 @@ class UITheme:
         return _THEME_REF_PATTERN.sub(replace, value)
 
     def css_variables(self) -> dict[str, str]:
-        """CSS variables this theme contributes, with refs resolved."""
+        """CSS variables this theme contributes, with refs resolved.
+
+        The text selection fields are only emitted when the theme sets them;
+        an empty one leaves Textual's derived default in place.
+        """
+        optional = {
+            "input-selection-background": self.text_selection_background,
+            "input-selection-foreground": self.text_selection_foreground,
+        }
         return {
             "menu-bar-background": self._resolve_refs(self.menu_bar_background),
             "menu-bar-foreground": self._resolve_refs(self.menu_bar_foreground),
@@ -177,6 +194,7 @@ class UITheme:
             "selected-cursor-row-foreground": self._resolve_refs(
                 self.selected_cursor_row_foreground
             ),
+            **{name: self._resolve_refs(value) for name, value in optional.items() if value},
         }
 
     def get_theme(self) -> Theme:

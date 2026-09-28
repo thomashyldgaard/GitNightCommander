@@ -30,7 +30,6 @@ variables:
   footer-background: '#268bd2'
   footer-key-foreground: '#fdf6e3'
   footer-description-foreground: '#fdf6e3'
-  input-selection-background: '#073642'
 ansi: false
 
 # Status-code colors painted in the Status column of the file list.
@@ -80,6 +79,11 @@ checkbox_mark: green
 # Settings dialog text caret. It is drawn on the cell it sits on, so it
 # swaps that cell's colors instead of painting one of its own.
 text_caret: reverse
+
+# Selected text in the commit message box (Shift+arrows). Empty keeps
+# Textual's default: $primary lightened at 40% opacity over the background.
+text_selection_background: '#073642'
+text_selection_foreground: ''
 
 # Chrome colors for the menu bar and the footer. The defaults are Textual's
 # own Header/Footer palette, so the bars match every other Textual app.

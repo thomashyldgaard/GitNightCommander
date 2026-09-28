@@ -4502,10 +4502,17 @@ class TestUIThemeCssVariables(unittest.TestCase):
         "selected-cursor-row-foreground",
     )
 
+    # Emitted only by the themes that set them.
+    _OPTIONAL_FIELDS = (
+        "input-selection-background",
+        "input-selection-foreground",
+    )
+
     def test_no_unresolved_theme_refs_in_css_variables(self):
         for ui_theme in THEMES:
             css_vars = ui_theme.css_variables()
-            for field_name in self._SEMANTIC_FIELDS:
+            present = [name for name in self._OPTIONAL_FIELDS if name in css_vars]
+            for field_name in (*self._SEMANTIC_FIELDS, *present):
                 value = css_vars[field_name]
                 self.assertNotIn(
                     "$",
@@ -4526,6 +4533,52 @@ class TestUIThemeCssVariables(unittest.TestCase):
             self.skipTest("Theme stub does not expose variables")
         for field_name in self._SEMANTIC_FIELDS:
             self.assertNotIn("$", variables[field_name])
+
+
+class TestTextSelectionThemeColors(unittest.TestCase):
+    """Selected text in the commit message box takes its colors from the
+    theme's text selection fields, emitted as Textual's own
+    `$input-selection-*` variables so TextArea picks them up unchanged."""
+
+    def test_an_unset_selection_leaves_textuals_default(self):
+        from gitnc.ui_theme import UITheme
+
+        css_vars = UITheme(name="plain", primary="#ffffff").css_variables()
+
+        self.assertNotIn("input-selection-background", css_vars)
+        self.assertNotIn("input-selection-foreground", css_vars)
+
+    def test_a_set_selection_is_emitted_with_refs_resolved(self):
+        from gitnc.ui_theme import UITheme
+
+        theme = UITheme(
+            name="plain",
+            primary="#ffffff",
+            warning="#00ffff",
+            text_selection_background="$warning 50%",
+            text_selection_foreground="#000000",
+        )
+
+        css_vars = theme.css_variables()
+        self.assertEqual(css_vars["input-selection-background"], "#00ffff 50%")
+        self.assertEqual(css_vars["input-selection-foreground"], "#000000")
+
+    def test_midnight_commander_marks_a_selection_dark_blue_on_cyan(self):
+        """Textual's default is $primary over the background — blue on blue
+        in this theme, so a selection could hardly be seen."""
+        css_vars = MIDNIGHT_COMMANDER_THEME.css_variables()
+
+        self.assertEqual(css_vars["input-selection-background"], MIDNIGHT_COMMANDER_THEME.warning)
+        self.assertEqual(
+            css_vars["input-selection-foreground"], MIDNIGHT_COMMANDER_THEME.background
+        )
+
+    def test_themes_set_the_selection_through_the_fields_only(self):
+        """A second copy under `variables` would win over the field."""
+        for ui_theme in THEMES:
+            with self.subTest(theme=ui_theme.name):
+                self.assertNotIn("input-selection-background", ui_theme.variables)
+                self.assertNotIn("input-selection-foreground", ui_theme.variables)
 
 
 class TestChromeThemeColors(unittest.TestCase):

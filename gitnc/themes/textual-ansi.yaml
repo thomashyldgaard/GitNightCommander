@@ -34,8 +34,6 @@ variables:
   input-cursor-background: ansi_black
   input-cursor-foreground: ansi_bright_white
   input-cursor-text-style: none
-  input-selection-background: ansi_bright_blue
-  input-selection-foreground: ansi_black
   screen-selection-background: ansi_bright_blue
   screen-selection-foreground: ansi_black
 ansi: true
@@ -87,6 +85,11 @@ checkbox_mark: green
 # Settings dialog text caret. It is drawn on the cell it sits on, so it
 # swaps that cell's colors instead of painting one of its own.
 text_caret: reverse
+
+# Selected text in the commit message box (Shift+arrows). Empty keeps
+# Textual's default: $primary lightened at 40% opacity over the background.
+text_selection_background: ansi_bright_blue
+text_selection_foreground: ansi_black
 
 # Chrome colors for the menu bar and the footer. The defaults are Textual's
 # own Header/Footer palette, so the bars match every other Textual app.

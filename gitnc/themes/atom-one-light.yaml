@@ -76,6 +76,11 @@ checkbox_mark: green
 # swaps that cell's colors instead of painting one of its own.
 text_caret: reverse
 
+# Selected text in the commit message box (Shift+arrows). Empty keeps
+# Textual's default: $primary lightened at 40% opacity over the background.
+text_selection_background: ''
+text_selection_foreground: ''
+
 # Chrome colors for the menu bar and the footer. The defaults are Textual's
 # own Header/Footer palette, so the bars match every other Textual app.
 # Values may reference this theme's palette fields with `$name`.
