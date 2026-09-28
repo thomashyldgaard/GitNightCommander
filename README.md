@@ -13,7 +13,9 @@ Main features:
   submodule sits on a branch of its own.
 - **`Ctrl+O` switches to the command line** — drops the app to a `$SHELL` in
   the same terminal; press `Ctrl+O` again to switch back with the TUI right
-  where you left it.
+  where you left it. Started from Midnight Commander's command line, mc keeps
+  `Ctrl+O` for its own panels, so the app warns at startup and asks whether
+  to continue (`C` / `Enter`) or exit (`E` / `Esc`).
 - **Every git operation shows the exact commands about to run** — the
   confirmation dialog is the last thing between the keypress and the wire, so
   there is never any guessing what a shortcut will do.

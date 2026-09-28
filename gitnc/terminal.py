@@ -6,11 +6,28 @@ import os
 import shlex
 import shutil
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from .git import GIT, GitCode, GitEntry, GitFilelist, GitStatus
 
 PREVIOUS_SCREEN_TOGGLE_KEY = "\x0f"
+
+# Midnight Commander exports `MC_SID` into the subshell it runs commands in,
+# and `MC_TMPDIR` into its own environment, which a command started with the
+# subshell disabled (`mc -u`) inherits. Either one means mc is our ancestor.
+MIDNIGHT_COMMANDER_ENV_VARS = ("MC_SID", "MC_TMPDIR")
+
+
+def started_from_midnight_commander(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether the process runs under Midnight Commander.
+
+    Under mc's subshell the keyboard doesn't reach us directly: mc reads the
+    terminal and forwards the keys to the subshell's pty, and it keeps its own
+    `Ctrl+O` — the key that toggles our previous screen — to switch back to
+    its panels, leaving this app running out of sight.
+    """
+    env = os.environ if environ is None else environ
+    return any(env.get(name) for name in MIDNIGHT_COMMANDER_ENV_VARS)
 
 
 class Terminal:

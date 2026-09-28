@@ -47,7 +47,7 @@ from textual.widgets import (
 from textual.widgets.option_list import Option
 
 from .git import ANSI_SGR_PATTERN, GIT, Commit, GitCode, GitEntry, GitFilelist
-from .terminal import Terminal
+from .terminal import Terminal, started_from_midnight_commander
 from .themes import load_all as _load_all_themes
 from .ui_theme import UITheme
 
@@ -122,6 +122,17 @@ COMMIT_DRAFT_JOIN_SECONDS = 5
 # bound for output nobody scrolls back to.
 COMMIT_DRAFT_OUTPUT_ROWS = 6
 COMMIT_DRAFT_OUTPUT_LINES = 200
+# Asked at startup under Midnight Commander, which reads the keyboard itself
+# and forwards it to its subshell, keeping Ctrl+O for its own panels.
+MIDNIGHT_COMMANDER_WARNING_TITLE = "Started from Midnight Commander"
+MIDNIGHT_COMMANDER_WARNING = (
+    "mc sees the keyboard before this app does. Ctrl+O switches back to mc's "
+    "panels instead of the previous screen, and other shortcuts may reach the "
+    "wrong app and behave unpredictably."
+)
+# Wide enough for the warning to wrap into a few readable lines.
+MIDNIGHT_COMMANDER_DIALOG_WIDTH = 60
+
 # Where the commit message is written: the app's own dialog, the editor named
 # by $EDITOR, or a command line typed into Options -> Settings. The last two
 # edit a temporary file on the previous screen.
@@ -1113,6 +1124,67 @@ class ConfirmDialog(ModalScreen[bool]):
             container.scroll_home(animate=False)
         elif direction == "end":
             container.scroll_end(animate=False)
+
+
+class MidnightCommanderDialog(ModalScreen[bool]):
+    """Startup warning when the app runs under Midnight Commander.
+
+    Dismisses with True to continue and False to exit. Esc exits: the
+    warning is about keys going astray, so the key that backs out of a
+    question shouldn't be the one that carries on regardless.
+    """
+
+    AUTO_FOCUS = None
+
+    DEFAULT_CSS = f"""
+    MidnightCommanderDialog {{
+        align: center middle;
+    }}
+    MidnightCommanderDialog #mc-warning-body {{
+        background: $panel;
+        border: solid $warning;
+        border-title-color: $warning;
+        border-title-style: bold;
+        width: {MIDNIGHT_COMMANDER_DIALOG_WIDTH};
+        max-width: 100%;
+        height: auto;
+        padding: 1 2;
+    }}
+    MidnightCommanderDialog Label {{
+        width: 100%;
+        height: auto;
+    }}
+    MidnightCommanderDialog #mc-warning-hint {{
+        margin-top: 1;
+    }}
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self.message = message
+
+    def compose(self) -> ComposeResult:
+        theme = _dialog_theme(self)
+        hint = (
+            f"[{theme.confirm_yes_key}]C[/]ontinue   "
+            f"[{theme.confirm_no_key}]E[/]xit   "
+            f"[{theme.dialog_hint}](Esc exits)[/{theme.dialog_hint}]"
+        )
+        body = Vertical(id="mc-warning-body")
+        body.border_title = MIDNIGHT_COMMANDER_WARNING_TITLE
+        with body:
+            yield Label(_escape_markup(self.message), id="mc-warning-message")
+            yield Label(hint, id="mc-warning-hint")
+
+    def on_key(self, event) -> None:
+        """Answer or swallow; every key stops here, as in ConfirmDialog."""
+        event.stop()
+        event.prevent_default()
+        key = event.key
+        if key in ("c", "C", "enter"):
+            self.dismiss(True)
+        elif key in ("e", "E", "escape"):
+            self.dismiss(False)
 
 
 class HelpDialog(ModalScreen[None]):
@@ -2734,6 +2806,22 @@ class GitNightCommanderApp(App):
         self._load_saved_theme()
         self._load_status()
         self._load_commits()
+        self._warn_if_started_from_midnight_commander()
+
+    def _warn_if_started_from_midnight_commander(self) -> None:
+        if not started_from_midnight_commander():
+            return
+
+        def resolved(continue_: bool | None) -> None:
+            if continue_:
+                self._focus_active_view()
+            else:
+                self.action_quit()
+
+        self.push_screen(
+            MidnightCommanderDialog(message=MIDNIGHT_COMMANDER_WARNING),
+            callback=resolved,
+        )
 
     def _settings_path(self) -> Path:
         config_home = os.environ.get("XDG_CONFIG_HOME")

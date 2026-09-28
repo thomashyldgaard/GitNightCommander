@@ -582,6 +582,73 @@ class TestGitNightCommanderApp(unittest.TestCase):
         load_status.assert_called_once_with()
         load_commits.assert_called_once_with()
 
+    def test_on_mount_asks_when_started_from_midnight_commander(self):
+        app = _mock_app()
+        app.push_screen = MagicMock()
+
+        with (
+            patch.object(app, "_load_saved_theme"),
+            patch.object(_app_module, "started_from_midnight_commander", return_value=True),
+        ):
+            app.on_mount()
+
+        dialog = _DialogProbe(app).assert_open()
+        self.assertIsInstance(dialog, _app_module.MidnightCommanderDialog)
+        self.assertIn("Ctrl+O", dialog.message)
+
+    def test_midnight_commander_continue_keeps_the_app_running(self):
+        app = _mock_app()
+        app.push_screen = MagicMock()
+        app.action_quit = MagicMock()
+
+        with patch.object(_app_module, "started_from_midnight_commander", return_value=True):
+            app._warn_if_started_from_midnight_commander()
+        _DialogProbe(app).confirm()
+
+        app.action_quit.assert_not_called()
+
+    def test_midnight_commander_exit_quits_the_app(self):
+        app = _mock_app()
+        app.push_screen = MagicMock()
+        app.action_quit = MagicMock()
+
+        with patch.object(_app_module, "started_from_midnight_commander", return_value=True):
+            app._warn_if_started_from_midnight_commander()
+        _DialogProbe(app).cancel()
+
+        app.action_quit.assert_called_once_with()
+
+    def test_on_mount_does_not_ask_outside_midnight_commander(self):
+        app = _mock_app()
+        app.push_screen = MagicMock()
+
+        with (
+            patch.object(app, "_load_saved_theme"),
+            patch.object(_app_module, "started_from_midnight_commander", return_value=False),
+        ):
+            app.on_mount()
+
+        _DialogProbe(app).assert_not_shown()
+
+    def test_midnight_commander_dialog_keys(self):
+        dialog_class = _app_module.MidnightCommanderDialog
+        for key, expected in (("c", True), ("enter", True), ("e", False), ("escape", False)):
+            with self.subTest(key=key):
+                dialog = dialog_class(message="warning")
+                with patch.object(dialog_class, "dismiss") as dismiss:
+                    dialog.on_key(_key_event(key))
+                dismiss.assert_called_once_with(expected)
+
+    def test_midnight_commander_dialog_swallows_other_keys(self):
+        dialog_class = _app_module.MidnightCommanderDialog
+        dialog = dialog_class(message="warning")
+        event = _key_event("s")
+        with patch.object(dialog_class, "dismiss") as dismiss:
+            dialog.on_key(event)
+
+        dismiss.assert_not_called()
+        event.stop.assert_called_once_with()
+
     def test_action_set_theme_persists_theme_setting(self):
         app = _mock_app()
 

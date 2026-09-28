@@ -3,7 +3,11 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from gitnc.git import Commit
-from gitnc.terminal import PREVIOUS_SCREEN_TOGGLE_KEY, Terminal
+from gitnc.terminal import (
+    PREVIOUS_SCREEN_TOGGLE_KEY,
+    Terminal,
+    started_from_midnight_commander,
+)
 from tests.gitprocess import fake_git_processes
 
 
@@ -90,3 +94,21 @@ class TestTerminalPreviousTerminal(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStartedFromMidnightCommander(unittest.TestCase):
+    def test_false_without_mc_variables(self):
+        self.assertFalse(started_from_midnight_commander(environ={"SHELL": "/bin/bash"}))
+
+    def test_true_under_mc_subshell(self):
+        self.assertTrue(started_from_midnight_commander(environ={"MC_SID": "4242"}))
+
+    def test_true_when_started_without_subshell(self):
+        self.assertTrue(started_from_midnight_commander(environ={"MC_TMPDIR": "/tmp/mc-user"}))
+
+    def test_empty_value_does_not_count(self):
+        self.assertFalse(started_from_midnight_commander(environ={"MC_SID": ""}))
+
+    def test_reads_process_environment_by_default(self):
+        with patch.dict("os.environ", {"MC_SID": "4242"}):
+            self.assertTrue(started_from_midnight_commander())
