@@ -257,11 +257,35 @@ spans the screen, and `F2` hands the message on to a `Commit N file(s)?`
 confirmation listing every command the commit will run. `Y` runs them; `N` puts
 you back in the dialog with the message you just wrote.
 
-Options -> Settings configures three things it uses:
+Options -> Settings configures the things it uses:
 
 - **Use branch name as prefix in commit messages** — prefills the message with
   `<branch>: `, and puts that prefix in front of a drafted message that does not
   already start with the branch name.
+- **Commit message editor** — where the message is written:
+  - **Built-in editor** (the default) is the commit dialog described above.
+  - **$EDITOR** runs the editor named by the `EDITOR` environment variable;
+    the row shows what it is currently set to.
+  - **Other editor** runs the command line typed under it, e.g. `code --wait`
+    or `nano`. Typing a command selects this option.
+
+  An external editor opens the message in a temporary `COMMIT_EDITMSG` file,
+  the name git itself uses, so editors with a git-commit mode switch into it.
+  The app is suspended while the editor runs, as it is for `Ctrl+O`. Under the
+  message the file lists the files going into the commit below git's scissors
+  line (`# ---- >8 ----`); everything from that line down is ignored, and lines
+  above it are kept even when they start with `#`. Saving and quitting goes on
+  to the `Commit N file(s)?` confirmation, and `N` there reopens the editor on
+  the same message. An empty message, one that is only the branch prefix, or
+  an editor that exits with an error status (vim's `:cq`) cancels the commit.
+  A GUI editor has to be told to wait for the file to be closed (`code
+  --wait`, `subl -w`), or it returns at once with the message unchanged.
+
+  If the external editor cannot be used — `EDITOR` is not set, the command is
+  empty or cannot be started, or the terminal cannot be suspended — the app
+  says so and opens the built-in dialog instead. The **Draft (F4)** button
+  below belongs to that dialog, so it is not available with an external
+  editor.
 - **Tool for drafting commit messages** — a command line and a prompt template,
   under the dialog's **Experimental** heading along with the numbered-list
   setting below. The template is typed into a framed field of its own, several
@@ -324,8 +348,10 @@ Options -> Settings configures three things it uses:
   Output with no numbered list in it goes into the message whole, as it does
   with the setting off.
 
-All three live in the app's `settings.json`, as `commit_draft_command`,
-`commit_draft_prompt` and `commit_draft_parse_suggestions`.
+They live in the app's `settings.json`: the editor as `commit_editor`
+(`builtin`, `environment` or `command`) and `commit_editor_command`, the
+drafting tool as `commit_draft_command`, `commit_draft_prompt` and
+`commit_draft_parse_suggestions`.
 
 ## Interface
 

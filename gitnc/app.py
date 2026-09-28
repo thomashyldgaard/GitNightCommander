@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import subprocess
+import tempfile
 import textwrap
 import threading
 from collections.abc import Callable, Mapping
@@ -107,6 +108,21 @@ COMMIT_DRAFT_JOIN_SECONDS = 5
 # bound for output nobody scrolls back to.
 COMMIT_DRAFT_OUTPUT_ROWS = 6
 COMMIT_DRAFT_OUTPUT_LINES = 200
+# Where the commit message is written: the app's own dialog, the editor named
+# by $EDITOR, or a command line typed into Options -> Settings. The last two
+# edit a temporary file on the previous screen.
+COMMIT_EDITOR_BUILTIN = "builtin"
+COMMIT_EDITOR_ENVIRONMENT = "environment"
+COMMIT_EDITOR_COMMAND = "command"
+COMMIT_EDITOR_MODES = (COMMIT_EDITOR_BUILTIN, COMMIT_EDITOR_ENVIRONMENT, COMMIT_EDITOR_COMMAND)
+# The temporary file's name is git's own, which is what tells vim, Emacs and
+# VS Code to open it in their git-commit mode.
+COMMIT_EDITOR_FILENAME = "COMMIT_EDITMSG"
+# Git's `--cleanup=scissors` marker: everything from it down is the help text
+# and the file list, and nothing above it is dropped — so a message line that
+# starts with `#` (an issue number, say) survives, as it would not if every
+# `#` line were read as a comment.
+COMMIT_EDITOR_SCISSORS = "# ------------------------ >8 ------------------------"
 # Rows the suggestion picker shows before it starts scrolling. A tool asked
 # for a handful of messages rarely returns more.
 SUGGESTION_DIALOG_MAX_ROWS = 12
@@ -843,18 +859,32 @@ class SettingsValues(NamedTuple):
     draft_prompt: str
     default_branch: str
     parse_suggestions: bool = False
+    editor: str = COMMIT_EDITOR_BUILTIN
+    editor_command: str = ""
 
 
-# Rows of the settings dialog, in the order they are drawn. The two checkbox
-# rows are toggled with Space; every other row is a free-text field, edited a
-# character at a time. The last three are the commit-drafting settings, drawn
-# under the Experimental heading.
+# Rows of the settings dialog, in the order they are drawn. The checkbox rows
+# are toggled with Space, and the three editor rows are a radio group Space
+# picks from; every other row is a free-text field, edited a character at a
+# time. The last three are the commit-drafting settings, drawn under the
+# Experimental heading.
 SETTINGS_ROW_BRANCH = 0
 SETTINGS_ROW_PREFIX = 1
-SETTINGS_ROW_COMMAND = 2
-SETTINGS_ROW_PROMPT = 3
-SETTINGS_ROW_PARSE = 4
-SETTINGS_ROW_COUNT = 5
+SETTINGS_ROW_EDITOR_BUILTIN = 2
+SETTINGS_ROW_EDITOR_ENVIRONMENT = 3
+SETTINGS_ROW_EDITOR_COMMAND = 4
+SETTINGS_ROW_EDITOR_COMMAND_LINE = 5
+SETTINGS_ROW_COMMAND = 6
+SETTINGS_ROW_PROMPT = 7
+SETTINGS_ROW_PARSE = 8
+SETTINGS_ROW_COUNT = 9
+
+# Which editor each radio row selects.
+SETTINGS_EDITOR_ROWS: dict[int, str] = {
+    SETTINGS_ROW_EDITOR_BUILTIN: COMMIT_EDITOR_BUILTIN,
+    SETTINGS_ROW_EDITOR_ENVIRONMENT: COMMIT_EDITOR_ENVIRONMENT,
+    SETTINGS_ROW_EDITOR_COMMAND: COMMIT_EDITOR_COMMAND,
+}
 
 # Inner width of the framed field the drafting prompt is edited in. It fits
 # inside `SettingsDialog`'s `min-width: 72` box with its indent and border,
@@ -1127,10 +1157,11 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
     """
 
     # Which attribute each free-text row edits. Everything the key handler
-    # and the renderer do to those rows is the same for all three, so the
+    # and the renderer do to those rows is the same for all of them, so the
     # rows differ only by their label and the value they carry.
     TEXT_ROWS: ClassVar[dict[int, str]] = {
         SETTINGS_ROW_BRANCH: "_default_branch",
+        SETTINGS_ROW_EDITOR_COMMAND_LINE: "_editor_command",
         SETTINGS_ROW_COMMAND: "_draft_command",
         SETTINGS_ROW_PROMPT: "_draft_prompt",
     }
@@ -1147,6 +1178,8 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
         draft_prompt: str = COMMIT_DRAFT_PROMPT_DEFAULT,
         default_branch: str = DEFAULT_BRANCH_DEFAULT,
         parse_suggestions: bool = False,
+        editor: str = COMMIT_EDITOR_BUILTIN,
+        editor_command: str = "",
     ) -> None:
         super().__init__()
         self._cursor: int = 0
@@ -1155,6 +1188,8 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
         self._draft_command: str = draft_command
         self._draft_prompt: str = draft_prompt
         self._parse_suggestions: bool = parse_suggestions
+        self._editor: str = editor if editor in COMMIT_EDITOR_MODES else COMMIT_EDITOR_BUILTIN
+        self._editor_command: str = editor_command
         # Where typing goes in the row under the cursor. A row is entered
         # with the caret after its last character, which is where a value
         # that is only ever appended to would have left it.
@@ -1221,6 +1256,10 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
                 return
             setattr(self, attribute, value[:caret] + character + value[caret:])
             self._caret = caret + 1
+        if self._cursor == SETTINGS_ROW_EDITOR_COMMAND_LINE:
+            # Typing a command is choosing to use it; making the user go back
+            # up and pick the radio as well would only be a way to forget to.
+            self._editor = COMMIT_EDITOR_COMMAND
         self._redraw()
 
     def _row_value(self) -> str:
@@ -1339,6 +1378,15 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
         arrow = ">" if self._cursor == row else " "
         return f"{arrow} {mark} {label}"
 
+    def _radio_row(self, row: int, label: str) -> str:
+        """One row of the editor radio group: cursor arrow, `(•)` / `( )`, and
+        its label."""
+        theme = _dialog_theme(self)
+        selected = self._editor == SETTINGS_EDITOR_ROWS[row]
+        mark = f"[{theme.checkbox_mark}](•)[/{theme.checkbox_mark}]" if selected else "( )"
+        arrow = ">" if self._cursor == row else " "
+        return f"{arrow} {mark} {label}"
+
     def _redraw(self) -> None:
         theme = _dialog_theme(self)
         lines: list[str] = ["[b]Settings[/b]", ""]
@@ -1350,6 +1398,24 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
                 self._branch_prefix,
                 "Use branch name as prefix in commit messages",
             )
+        )
+        lines.append("")
+        lines.append(self._section_header("Commit message editor"))
+        lines.append("")
+        lines.append(self._radio_row(SETTINGS_ROW_EDITOR_BUILTIN, "Built-in editor"))
+        environment = os.environ.get("EDITOR", "").strip()
+        lines.append(
+            self._radio_row(
+                SETTINGS_ROW_EDITOR_ENVIRONMENT,
+                f"$EDITOR ({_escape_markup(environment)})" if environment else "$EDITOR (not set)",
+            )
+        )
+        lines.append(self._radio_row(SETTINGS_ROW_EDITOR_COMMAND, "Other editor:"))
+        lines.append(self._text_row(SETTINGS_ROW_EDITOR_COMMAND_LINE, "      Command: "))
+        lines.append(
+            f"[{theme.dialog_hint}]"
+            "    (an external editor opens the message in a temporary file)"
+            f"[/{theme.dialog_hint}]"
         )
         lines.append("")
         lines.append(self._section_header("Experimental"))
@@ -1398,6 +1464,8 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
             self._branch_prefix = not self._branch_prefix
         elif self._cursor == SETTINGS_ROW_PARSE:
             self._parse_suggestions = not self._parse_suggestions
+        elif self._cursor in SETTINGS_EDITOR_ROWS:
+            self._editor = SETTINGS_EDITOR_ROWS[self._cursor]
         self._redraw()
 
     def get_values(self) -> SettingsValues:
@@ -1407,6 +1475,8 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
             draft_prompt=self._draft_prompt,
             default_branch=self._default_branch,
             parse_suggestions=self._parse_suggestions,
+            editor=self._editor,
+            editor_command=self._editor_command,
         )
 
 
@@ -1508,6 +1578,87 @@ def _commit_message_subject(message: str) -> str:
     if len(lines) == 1:
         return lines[0]
     return f"{lines[0]}{TRUNCATION_MARKER}"
+
+
+class EditorResult(NamedTuple):
+    """What an external editor left behind.
+
+    `started` is False when the editor couldn't be run at all, and `detail`
+    says why. Otherwise `message` is the edited message — or None when the
+    editor exited with a failure status, which is how vim's `:cq` and its
+    kind say "abandon this", and `detail` then carries that status.
+    """
+
+    started: bool
+    message: str | None
+    detail: str = ""
+
+
+def commit_editor_template(message: str, filenames: list[str]) -> str:
+    """The temporary file handed to the editor: the message so far, then
+    git's scissors line and, under it, the help text and the files going into
+    the commit — which is what the built-in dialog can't show and the editor
+    has room for."""
+    help_lines = [
+        COMMIT_EDITOR_SCISSORS,
+        "# Do not modify or remove the line above.",
+        "# Everything below it is ignored. An empty message cancels the commit.",
+        "#",
+        "# Files in this commit:",
+        *(f"#\t{filename}" for filename in filenames),
+    ]
+    return "\n".join([message, "", *help_lines, ""])
+
+
+def strip_commit_editor_text(text: str) -> str:
+    """The message in an edited `commit_editor_template()`: everything above
+    the scissors line, with trailing whitespace and the blank lines around it
+    taken off. A file whose scissors line was deleted is kept whole, as git
+    keeps it."""
+    lines = text.splitlines()
+    if COMMIT_EDITOR_SCISSORS in lines:
+        lines = lines[: lines.index(COMMIT_EDITOR_SCISSORS)]
+    return "\n".join(line.rstrip() for line in lines).strip("\n")
+
+
+def run_commit_editor(
+    *, argv: list[str], message: str, filenames: list[str], cwd: str
+) -> EditorResult:
+    """Edit `message` in the editor `argv` names and return what it saved.
+
+    The message goes to a temporary `COMMIT_EDITMSG` and the editor is run
+    as `<argv> <path>`, on the terminal as it is — the caller has suspended
+    the app, so the editor owns the screen and the keyboard until it exits.
+    The directory the file sits in is removed again whatever happens.
+
+    Ctrl+C inside an editor that doesn't claim it reaches this process too;
+    it is read as the editor being abandoned rather than let out, because an
+    exception escaping here would skip `App.suspend()`'s resume.
+    """
+    with tempfile.TemporaryDirectory(prefix="gitnc-") as directory:
+        path = Path(directory) / COMMIT_EDITOR_FILENAME
+        path.write_text(commit_editor_template(message, filenames), encoding="utf-8")
+        try:
+            completed = subprocess.run([*argv, str(path)], cwd=cwd, check=False)
+        except OSError as exc:
+            return EditorResult(
+                started=False, message=None, detail=f"Could not run {argv[0]}: {exc}"
+            )
+        except KeyboardInterrupt:
+            return EditorResult(started=True, message=None, detail=f"{argv[0]} was interrupted")
+        if completed.returncode != 0:
+            return EditorResult(
+                started=True,
+                message=None,
+                detail=f"{argv[0]} exited with status {completed.returncode}",
+            )
+        try:
+            edited = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            return EditorResult(
+                started=True, message=None, detail=f"Could not read the message back: {exc}"
+            )
+    return EditorResult(started=True, message=strip_commit_editor_text(edited))
 
 
 def commit_draft_prompt(template: str, filenames: list[str]) -> str:
@@ -3624,7 +3775,88 @@ class GitNightCommanderApp(App):
         self._pending_commit_targets = list(targets)
         branch = self._commit_branch_prefix()
         prefill = f"{branch}: " if branch else ""
-        self.push_screen(CommitDialog(prefill=prefill), callback=self._commit_result)
+        self._edit_commit_message(prefill)
+
+    def _edit_commit_message(self, message: str) -> None:
+        """Open `message` in the editor the settings name, and hand the
+        result on to `_commit_result` as the commit dialog would.
+
+        The built-in dialog is also the fallback whenever the external editor
+        can't be used — not configured after all, or a terminal that can't be
+        handed over — so the commit the user started is never lost to a
+        setting.
+        """
+        argv = self._commit_editor_argv()
+        if argv is not None and self._commit_in_external_editor(argv=argv, message=message):
+            return
+        self.push_screen(CommitDialog(prefill=message), callback=self._commit_result)
+
+    def _commit_editor_argv(self) -> list[str] | None:
+        """The external editor's command line, split the way a shell would,
+        or None for the built-in dialog.
+
+        A setting that names an external editor without one — $EDITOR unset,
+        an empty or unparseable command — says so and falls back to the
+        dialog.
+        """
+        settings = self._load_settings()
+        editor = _setting_str(settings, "commit_editor", COMMIT_EDITOR_BUILTIN)
+        if editor == COMMIT_EDITOR_ENVIRONMENT:
+            command = os.environ.get("EDITOR", "")
+            missing = "$EDITOR is not set"
+        elif editor == COMMIT_EDITOR_COMMAND:
+            command = _setting_str(settings, "commit_editor_command", "")
+            missing = "No editor command configured (Options → Settings)"
+        else:
+            return None
+        if not command.strip():
+            self.notify(f"{missing}; using the built-in editor")
+            return None
+        try:
+            return shlex.split(command)
+        except ValueError:
+            self.notify(f"Could not read the editor command: {command}; using the built-in editor")
+            return None
+
+    def _commit_in_external_editor(self, *, argv: list[str], message: str) -> bool:
+        """Edit the commit message in `argv` on the previous screen.
+
+        The app is suspended for the length of the edit, the way `Ctrl+O`
+        suspends it for a shell. An empty message — or one that is nothing
+        but the branch prefix it was opened with — cancels the commit, as
+        does an editor that exits with a failure status; git reads both the
+        same way.
+
+        Returns False when nothing was edited — the terminal can't be
+        suspended, or the editor couldn't be started — and the caller opens
+        the built-in dialog instead. Only entering the suspension is guarded,
+        as in `_draft_on_previous_screen()`.
+        """
+        filenames = [entry.filename for entry in self._pending_commit_targets]
+        with ExitStack() as suspension:
+            try:
+                suspension.enter_context(self.suspend())
+            except (OSError, SuspendNotSupported, RuntimeError):
+                # RuntimeError: an app with no driver declines to suspend by
+                # never yielding.
+                self.notify("Can't hand the terminal to an editor here; using the built-in editor")
+                return False
+            edited = run_commit_editor(
+                argv=argv, message=message, filenames=filenames, cwd=self.repo_path
+            )
+        if not edited.started:
+            self.notify(f"{edited.detail}; using the built-in editor")
+            return False
+        if edited.message is None:
+            self.notify(edited.detail)
+            self._commit_result(None)
+            return True
+        branch = self._commit_branch_prefix()
+        if not edited.message or (branch and edited.message == f"{branch}:"):
+            self._commit_result(None)
+            return True
+        self._commit_result(edited.message)
+        return True
 
     def _commit_branch_prefix(self) -> str:
         """The branch name commit messages are prefixed with, or "" when the
@@ -3840,7 +4072,7 @@ class GitNightCommanderApp(App):
             f"Commit {len(targets)} file(s)?",
             commands,
             lambda: self._commit_submit(message),
-            lambda: self.push_screen(CommitDialog(prefill=message), callback=self._commit_result),
+            lambda: self._edit_commit_message(message),
         )
 
     def _commit_submit(self, message: str) -> None:
@@ -4101,6 +4333,8 @@ class GitNightCommanderApp(App):
                 ),
                 default_branch=_setting_str(settings, "default_branch", DEFAULT_BRANCH_DEFAULT),
                 parse_suggestions=bool(settings.get("commit_draft_parse_suggestions", False)),
+                editor=_setting_str(settings, "commit_editor", COMMIT_EDITOR_BUILTIN),
+                editor_command=_setting_str(settings, "commit_editor_command", ""),
             ),
             callback=self._settings_result,
         )
@@ -4116,6 +4350,8 @@ class GitNightCommanderApp(App):
         settings["commit_draft_prompt"] = values.draft_prompt
         settings["default_branch"] = values.default_branch
         settings["commit_draft_parse_suggestions"] = values.parse_suggestions
+        settings["commit_editor"] = values.editor
+        settings["commit_editor_command"] = values.editor_command
         if not self._save_settings(settings):
             self.notify("Settings saved (could not write to disk)")
         else:

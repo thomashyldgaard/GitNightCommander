@@ -306,6 +306,10 @@ try:
         COMMIT_DRAFT_COMMAND_DEFAULT,
         COMMIT_DRAFT_OUTPUT_LINES,
         COMMIT_DRAFT_PROMPT_DEFAULT,
+        COMMIT_EDITOR_BUILTIN,
+        COMMIT_EDITOR_COMMAND,
+        COMMIT_EDITOR_ENVIRONMENT,
+        COMMIT_EDITOR_SCISSORS,
         CONFIRM_DIALOG_CHROME_WIDTH,
         CONFIRM_DIALOG_MIN_TEXT_WIDTH,
         CONFIRM_DIALOG_SCROLLBAR_WIDTH,
@@ -330,7 +334,12 @@ try:
         SETTINGS_FIELD_MAX_LINES,
         SETTINGS_FIELD_MIN_LINES,
         SETTINGS_FIELD_TEXT_WIDTH,
+        SETTINGS_ROW_COMMAND,
         SETTINGS_ROW_COUNT,
+        SETTINGS_ROW_EDITOR_BUILTIN,
+        SETTINGS_ROW_EDITOR_COMMAND,
+        SETTINGS_ROW_EDITOR_COMMAND_LINE,
+        SETTINGS_ROW_EDITOR_ENVIRONMENT,
         SETTINGS_ROW_PARSE,
         SETTINGS_ROW_PROMPT,
         SETTINGS_SECTION_WIDTH,
@@ -349,6 +358,7 @@ try:
         ConfirmDialog,
         DraftResult,
         DropdownMenu,
+        EditorResult,
         FieldLine,
         FileDiff,
         GitNightCommanderApp,
@@ -368,9 +378,12 @@ try:
         _truncate_to_width,
         _wrap_field_text,
         commit_draft_prompt,
+        commit_editor_template,
         parse_numbered_suggestions,
         render_commit_detail,
         run_commit_draft,
+        run_commit_editor,
+        strip_commit_editor_text,
     )
     from gitnc.git import GitCode, GitEntry, GitFilelist
     from gitnc.terminal import Terminal
@@ -383,6 +396,10 @@ except ModuleNotFoundError as exc:
         COMMIT_DRAFT_COMMAND_DEFAULT,
         COMMIT_DRAFT_OUTPUT_LINES,
         COMMIT_DRAFT_PROMPT_DEFAULT,
+        COMMIT_EDITOR_BUILTIN,
+        COMMIT_EDITOR_COMMAND,
+        COMMIT_EDITOR_ENVIRONMENT,
+        COMMIT_EDITOR_SCISSORS,
         CONFIRM_DIALOG_CHROME_WIDTH,
         CONFIRM_DIALOG_MIN_TEXT_WIDTH,
         CONFIRM_DIALOG_SCROLLBAR_WIDTH,
@@ -407,7 +424,12 @@ except ModuleNotFoundError as exc:
         SETTINGS_FIELD_MAX_LINES,
         SETTINGS_FIELD_MIN_LINES,
         SETTINGS_FIELD_TEXT_WIDTH,
+        SETTINGS_ROW_COMMAND,
         SETTINGS_ROW_COUNT,
+        SETTINGS_ROW_EDITOR_BUILTIN,
+        SETTINGS_ROW_EDITOR_COMMAND,
+        SETTINGS_ROW_EDITOR_COMMAND_LINE,
+        SETTINGS_ROW_EDITOR_ENVIRONMENT,
         SETTINGS_ROW_PARSE,
         SETTINGS_ROW_PROMPT,
         SETTINGS_SECTION_WIDTH,
@@ -426,6 +448,7 @@ except ModuleNotFoundError as exc:
         ConfirmDialog,
         DraftResult,
         DropdownMenu,
+        EditorResult,
         FieldLine,
         FileDiff,
         GitNightCommanderApp,
@@ -445,9 +468,12 @@ except ModuleNotFoundError as exc:
         _truncate_to_width,
         _wrap_field_text,
         commit_draft_prompt,
+        commit_editor_template,
         parse_numbered_suggestions,
         render_commit_detail,
         run_commit_draft,
+        run_commit_editor,
+        strip_commit_editor_text,
     )
     from gitnc.git import GitCode, GitEntry, GitFilelist
     from gitnc.terminal import Terminal
@@ -3088,9 +3114,9 @@ class TestSettingsDialog(unittest.TestCase):
         """The predefined tool list is gone: the user names a command, so any
         tool works without the app knowing about it."""
         dialog = SettingsDialog(draft_command="")
-        for _ in range(2):
+        for _ in range(SETTINGS_ROW_COMMAND):
             dialog.on_key(_key_event("down"))
-        self.assertEqual(dialog._cursor, 2)
+        self.assertEqual(dialog._cursor, SETTINGS_ROW_COMMAND)
 
         for key, character in (("c", "c"), ("l", "l"), ("space", None), ("minus", "-")):
             dialog.on_key(_key_event(key, character=character))
@@ -3099,9 +3125,9 @@ class TestSettingsDialog(unittest.TestCase):
 
     def test_the_prompt_template_is_editable_too(self):
         dialog = SettingsDialog(draft_prompt="ab")
-        for _ in range(3):
+        for _ in range(SETTINGS_ROW_PROMPT):
             dialog.on_key(_key_event("down"))
-        self.assertEqual(dialog._cursor, 3)
+        self.assertEqual(dialog._cursor, SETTINGS_ROW_PROMPT)
 
         dialog.on_key(_key_event("backspace"))
         dialog.on_key(_key_event("c", character="c"))
@@ -3112,7 +3138,7 @@ class TestSettingsDialog(unittest.TestCase):
         """Space is the checkbox key, but on a text row it has to be a space
         or command lines and prompts couldn't be typed at all."""
         dialog = SettingsDialog(draft_prompt="a")
-        for _ in range(3):
+        for _ in range(SETTINGS_ROW_PROMPT):
             dialog.on_key(_key_event("down"))
 
         dialog.on_key(_key_event("space"))
@@ -3251,7 +3277,8 @@ class TestSettingsDialog(unittest.TestCase):
 
         heading = next(i for i, line in enumerate(lines) if "Experimental" in line)
         for label in ("Command:", "Prompt:", "Parse suggestions"):
-            row = next(i for i, line in enumerate(lines) if label in line)
+            # The last match: the editor section above has a Command: row too.
+            row = max(i for i, line in enumerate(lines) if label in line)
             self.assertGreater(row, heading, label)
         for label in ("Default branch:", "Use branch name as prefix"):
             row = next(i for i, line in enumerate(lines) if label in line)
@@ -3577,6 +3604,94 @@ class TestSettingsDialog(unittest.TestCase):
             )
 
         notify.assert_called_once_with("Settings saved (could not write to disk)")
+
+    def test_the_editor_defaults_to_the_built_in_one(self):
+        values = SettingsDialog().get_values()
+
+        self.assertEqual(values.editor, COMMIT_EDITOR_BUILTIN)
+        self.assertEqual(values.editor_command, "")
+
+    def test_an_unknown_editor_setting_falls_back_to_the_built_in_one(self):
+        """settings.json is hand-editable, so the mode can be anything."""
+        self.assertEqual(SettingsDialog(editor="nano").get_values().editor, COMMIT_EDITOR_BUILTIN)
+
+    def test_space_picks_one_editor_of_the_three(self):
+        """The three editor rows are a radio group: picking one unpicks the
+        others, and picking the selected one again leaves it selected."""
+        dialog = SettingsDialog()
+        for row, expected in (
+            (SETTINGS_ROW_EDITOR_ENVIRONMENT, COMMIT_EDITOR_ENVIRONMENT),
+            (SETTINGS_ROW_EDITOR_COMMAND, COMMIT_EDITOR_COMMAND),
+            (SETTINGS_ROW_EDITOR_COMMAND, COMMIT_EDITOR_COMMAND),
+            (SETTINGS_ROW_EDITOR_BUILTIN, COMMIT_EDITOR_BUILTIN),
+        ):
+            with self.subTest(row=row):
+                dialog._cursor = row
+                dialog.on_key(_key_event("space"))
+                self.assertEqual(dialog.get_values().editor, expected)
+        # The checkbox above the group is untouched.
+        self.assertFalse(dialog.get_values().branch_prefix)
+
+    def test_the_selected_editor_is_marked(self):
+        lines = self._rendered_lines(SettingsDialog(editor=COMMIT_EDITOR_ENVIRONMENT))
+
+        environment = next(line for line in lines if "$EDITOR" in line)
+        builtin = next(line for line in lines if "Built-in editor" in line)
+        self.assertIn("(•)", environment)
+        self.assertIn("( )", builtin)
+
+    def test_the_environment_row_shows_what_editor_is_set(self):
+        for value, expected in (("vim", "$EDITOR (vim)"), ("", "$EDITOR (not set)")):
+            with self.subTest(value=value), patch.dict("os.environ", {"EDITOR": value}):
+                lines = self._rendered_lines(SettingsDialog())
+                self.assertTrue([line for line in lines if expected in line], lines)
+
+    def test_typing_an_editor_command_selects_it(self):
+        """Typing a command is choosing to use it."""
+        dialog = SettingsDialog()
+        for _ in range(SETTINGS_ROW_EDITOR_COMMAND_LINE):
+            dialog.on_key(_key_event("down"))
+        self.assertEqual(dialog._cursor, SETTINGS_ROW_EDITOR_COMMAND_LINE)
+
+        for key, character in (("v", "v"), ("i", "i"), ("space", None), ("minus", "-")):
+            dialog.on_key(_key_event(key, character=character))
+
+        self.assertEqual(dialog.get_values().editor_command, "vi -")
+        self.assertEqual(dialog.get_values().editor, COMMIT_EDITOR_COMMAND)
+
+    def test_the_editor_settings_sit_above_the_experimental_heading(self):
+        """Choosing an editor always works, so it isn't experimental."""
+        lines = self._rendered_lines(SettingsDialog())
+
+        heading = next(i for i, line in enumerate(lines) if "Experimental" in line)
+        editor = next(i for i, line in enumerate(lines) if "Commit message editor" in line)
+        self.assertLess(editor, heading)
+
+    def test_the_editor_settings_round_trip_through_the_dialog(self):
+        app = _mock_app()
+        saved: dict[str, object] = {}
+        with patch.object(
+            app,
+            "_load_settings",
+            return_value={
+                "commit_editor": COMMIT_EDITOR_COMMAND,
+                "commit_editor_command": "code --wait",
+            },
+        ):
+            app.action_settings()
+        values = _pushed_screen(app).get_values()
+        self.assertEqual(values.editor, COMMIT_EDITOR_COMMAND)
+        self.assertEqual(values.editor_command, "code --wait")
+
+        with (
+            patch.object(app, "_load_settings", return_value={}),
+            patch.object(app, "_save_settings", side_effect=lambda s: saved.update(s) or True),
+            patch.object(app, "notify"),
+        ):
+            app._settings_result(values._replace(editor=COMMIT_EDITOR_ENVIRONMENT))
+
+        self.assertEqual(saved["commit_editor"], COMMIT_EDITOR_ENVIRONMENT)
+        self.assertEqual(saved["commit_editor_command"], "code --wait")
 
 
 class TestMenuStyling(unittest.TestCase):
@@ -5576,6 +5691,237 @@ class TestCommitDraftOutputPane(unittest.TestCase):
         dialog.set_drafting(True)
 
         self.assertEqual(dialog.output_lines, [])
+
+
+def _editor_argv(script: str) -> list[str]:
+    """An "editor" that runs `script` with the message file as `path`."""
+    return [sys.executable, "-c", f"import sys; path = sys.argv[1]\n{script}"]
+
+
+class TestRunCommitEditor(unittest.TestCase):
+    """The external editor edits a temporary COMMIT_EDITMSG and is read back
+    from above git's scissors line."""
+
+    def test_the_template_carries_the_message_and_the_files(self):
+        text = commit_editor_template("main: ", ["pkg/a.py", "b.py"])
+
+        self.assertTrue(text.startswith("main: \n\n"))
+        self.assertIn(COMMIT_EDITOR_SCISSORS, text)
+        self.assertIn("#\tpkg/a.py", text)
+        self.assertIn("#\tb.py", text)
+
+    def test_everything_from_the_scissors_down_is_dropped(self):
+        text = commit_editor_template("feat: x\n\nbody  ", ["a.py"])
+
+        self.assertEqual(strip_commit_editor_text(text), "feat: x\n\nbody")
+
+    def test_hash_lines_above_the_scissors_survive(self):
+        """A message line starting with `#` isn't a comment above the cut."""
+        text = commit_editor_template("#12: fix the widget", ["a.py"])
+
+        self.assertEqual(strip_commit_editor_text(text), "#12: fix the widget")
+
+    def test_a_file_without_the_scissors_line_is_kept_whole(self):
+        self.assertEqual(strip_commit_editor_text("\nfeat: x\n# note\n\n"), "feat: x\n# note")
+
+    def test_the_editor_edits_a_commit_editmsg_file(self):
+        """The file is named as git names it, which is what puts editors into
+        their git-commit mode, and it is removed afterwards."""
+        seen = Path(tempfile.mkdtemp()) / "seen"
+        script = (
+            f"open({str(seen)!r}, 'w').write(path)\n"
+            "text = open(path).read()\n"
+            "open(path, 'w').write('feat: typed\\n' + text)"
+        )
+
+        result = run_commit_editor(
+            argv=_editor_argv(script), message="", filenames=["a.py"], cwd="."
+        )
+
+        self.assertEqual(result, EditorResult(started=True, message="feat: typed"))
+        path = Path(seen.read_text())
+        self.assertEqual(path.name, "COMMIT_EDITMSG")
+        self.assertFalse(path.exists())
+
+    def test_a_failing_editor_abandons_the_message(self):
+        result = run_commit_editor(
+            argv=_editor_argv("sys.exit(1)"), message="feat: x", filenames=[], cwd="."
+        )
+
+        self.assertTrue(result.started)
+        self.assertIsNone(result.message)
+        self.assertIn("exited with status 1", result.detail)
+
+    def test_an_editor_that_cannot_be_run_says_so(self):
+        result = run_commit_editor(
+            argv=["/nonexistent/editor"], message="feat: x", filenames=[], cwd="."
+        )
+
+        self.assertFalse(result.started)
+        self.assertIn("Could not run /nonexistent/editor", result.detail)
+
+    def test_ctrl_c_is_read_as_abandoning_the_editor(self):
+        """Letting it escape would skip App.suspend()'s resume."""
+        with patch("gitnc.app.subprocess.run", side_effect=KeyboardInterrupt):
+            result = run_commit_editor(argv=["vi"], message="", filenames=[], cwd=".")
+
+        self.assertEqual(
+            result, EditorResult(started=True, message=None, detail="vi was interrupted")
+        )
+
+
+class TestCommitInExternalEditor(unittest.TestCase):
+    """With an external editor in the settings, the commit message is written
+    there on the previous screen instead of in the commit dialog."""
+
+    def _app(self, settings: dict[str, Any], *, branch: str | None = None) -> Any:
+        entry = GitEntry(GitCode.MODIFIED_UNMODIFIED, "pkg/a.py")
+        app = _mock_app()
+        app.file_list_mode = MODE_SHORT
+        app.status_entries = GitFilelist([entry])
+        app.git.load_status.return_value = GitFilelist([entry])
+        app.git.staged_filenames.return_value = {"pkg/a.py"}
+        app.git.branch_name.return_value = branch
+        app.git.commit.return_value = MagicMock(returncode=0, stderr="")
+        status_list = MagicMock()
+        status_list.index = 0
+        app.query_one.side_effect = lambda selector, *a, **k: (
+            status_list if selector == "#status_list" else MagicMock()
+        )
+        app._load_settings = MagicMock(return_value=settings)
+        app.notify = MagicMock()
+        app.suspend = _Suspension()
+        return app
+
+    def _commit_with(self, app: Any, result: EditorResult) -> tuple[MagicMock, _DialogProbe]:
+        """Start a commit with the editor returning `result`, recording
+        whether it ran while the app was suspended."""
+        suspended: list[bool] = []
+
+        def editor(**kwargs: Any) -> EditorResult:
+            suspended.append(app.suspend.active)
+            return result
+
+        dialogs = _DialogProbe(app)
+        with patch("gitnc.app.run_commit_editor", side_effect=editor) as run:
+            app.action_commit_files()
+        if run.called:
+            self.assertEqual(suspended, [True])
+        return run, dialogs
+
+    def test_the_built_in_editor_is_the_commit_dialog(self):
+        app = self._app({})
+        run, dialogs = self._commit_with(app, EditorResult(started=True, message="x"))
+
+        run.assert_not_called()
+        self.assertIsInstance(dialogs.assert_open(), CommitDialog)
+
+    def test_a_configured_command_edits_the_message_and_confirms_it(self):
+        app = self._app(
+            {
+                "commit_editor": COMMIT_EDITOR_COMMAND,
+                "commit_editor_command": "code --wait",
+                "branch_prefix_in_commits": True,
+            },
+            branch="main",
+        )
+        run, dialogs = self._commit_with(app, EditorResult(started=True, message="main: feat: x"))
+
+        run.assert_called_once()
+        self.assertEqual(run.call_args.kwargs["argv"], ["code", "--wait"])
+        self.assertEqual(run.call_args.kwargs["message"], "main: ")
+        self.assertEqual(run.call_args.kwargs["filenames"], ["pkg/a.py"])
+        self.assertEqual(dialogs.prompt(), "Commit 1 file(s)?")
+        dialogs.confirm()
+        app.git.commit.assert_called_once_with("main: feat: x")
+
+    def test_the_environment_editor_comes_from_editor(self):
+        app = self._app({"commit_editor": COMMIT_EDITOR_ENVIRONMENT})
+        with patch.dict("os.environ", {"EDITOR": "vim -u NONE"}):
+            run, _ = self._commit_with(app, EditorResult(started=True, message="feat: x"))
+
+        self.assertEqual(run.call_args.kwargs["argv"], ["vim", "-u", "NONE"])
+
+    def test_an_unset_editor_falls_back_to_the_commit_dialog(self):
+        app = self._app({"commit_editor": COMMIT_EDITOR_ENVIRONMENT})
+        with patch.dict("os.environ", {"EDITOR": ""}):
+            run, dialogs = self._commit_with(app, EditorResult(started=True, message="x"))
+
+        run.assert_not_called()
+        self.assertIsInstance(dialogs.assert_open(), CommitDialog)
+        app.notify.assert_called_once_with("$EDITOR is not set; using the built-in editor")
+
+    def test_an_empty_command_falls_back_to_the_commit_dialog(self):
+        app = self._app({"commit_editor": COMMIT_EDITOR_COMMAND, "commit_editor_command": " "})
+        run, dialogs = self._commit_with(app, EditorResult(started=True, message="x"))
+
+        run.assert_not_called()
+        self.assertIsInstance(dialogs.assert_open(), CommitDialog)
+
+    def test_an_editor_that_cannot_start_falls_back_to_the_commit_dialog(self):
+        app = self._app({"commit_editor": COMMIT_EDITOR_COMMAND, "commit_editor_command": "nope"})
+        _, dialogs = self._commit_with(
+            app, EditorResult(started=False, message=None, detail="Could not run nope")
+        )
+
+        self.assertIsInstance(dialogs.assert_open(), CommitDialog)
+        app.notify.assert_called_once_with("Could not run nope; using the built-in editor")
+
+    def test_a_terminal_that_cannot_suspend_falls_back_to_the_commit_dialog(self):
+        app = self._app({"commit_editor": COMMIT_EDITOR_COMMAND, "commit_editor_command": "vi"})
+        app.suspend = _Suspension(supported=False)
+        run, dialogs = self._commit_with(app, EditorResult(started=True, message="x"))
+
+        run.assert_not_called()
+        self.assertIsInstance(dialogs.assert_open(), CommitDialog)
+
+    def test_an_empty_message_cancels_the_commit(self):
+        app = self._app({"commit_editor": COMMIT_EDITOR_COMMAND, "commit_editor_command": "vi"})
+        _, dialogs = self._commit_with(app, EditorResult(started=True, message=""))
+
+        dialogs.assert_not_shown()
+        app.git.commit.assert_not_called()
+        app.notify.assert_called_with("Commit cancelled")
+
+    def test_a_message_that_is_only_the_branch_prefix_cancels_the_commit(self):
+        app = self._app(
+            {
+                "commit_editor": COMMIT_EDITOR_COMMAND,
+                "commit_editor_command": "vi",
+                "branch_prefix_in_commits": True,
+            },
+            branch="main",
+        )
+        _, dialogs = self._commit_with(app, EditorResult(started=True, message="main:"))
+
+        dialogs.assert_not_shown()
+        app.git.commit.assert_not_called()
+
+    def test_an_abandoned_editor_cancels_the_commit(self):
+        app = self._app({"commit_editor": COMMIT_EDITOR_COMMAND, "commit_editor_command": "vi"})
+        _, dialogs = self._commit_with(
+            app, EditorResult(started=True, message=None, detail="vi exited with status 1")
+        )
+
+        dialogs.assert_not_shown()
+        app.git.commit.assert_not_called()
+        app.notify.assert_any_call("vi exited with status 1")
+        app.notify.assert_called_with("Commit cancelled")
+
+    def test_declining_the_confirmation_reopens_the_editor(self):
+        """N goes back to the message in the same editor it was written in."""
+        app = self._app({"commit_editor": COMMIT_EDITOR_COMMAND, "commit_editor_command": "vi"})
+        dialogs = _DialogProbe(app)
+        with patch(
+            "gitnc.app.run_commit_editor",
+            return_value=EditorResult(started=True, message="feat: x"),
+        ) as run:
+            app.action_commit_files()
+            dialogs.cancel()
+
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args.kwargs["message"], "feat: x")
+        app.git.commit.assert_not_called()
 
 
 class TestCommitDialogCss(unittest.TestCase):
