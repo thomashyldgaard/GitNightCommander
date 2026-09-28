@@ -1845,9 +1845,11 @@ class CommitDialog(ModalScreen["str | None"]):
     that can't be suspended, where it is the only way to tell a tool still
     working from one that has hung.
 
-    The box spans the screen: a commit message is prose the user may want to
-    see whole, and the dialog is the widest thing the app puts on screen
-    rather than a popup measured against its content.
+    The box fills the screen, both ways: a commit message is prose the user
+    may want to see whole, so the dialog is the largest thing the app puts
+    on screen rather than a popup measured against its content. The text
+    area takes every row the title, buttons, log pane and hint leave over,
+    and scrolls once the message runs past them.
 
     Unlike the other dialogs this one carries BINDINGS as well as
     CommitTextArea's copy of them. It has no `on_key` stopping events, so the
@@ -1871,8 +1873,7 @@ class CommitDialog(ModalScreen["str | None"]):
         background: $panel;
         border: solid $accent;
         width: 100%;
-        height: auto;
-        max-height: 100%;
+        height: 100%;
         padding: 1 2;
     }}
     CommitDialog Label {{
@@ -1881,7 +1882,9 @@ class CommitDialog(ModalScreen["str | None"]):
     }}
     CommitDialog #commit-message {{
         width: 100%;
-        height: 10;
+        /* The rows nothing else needs; a longer message scrolls inside. */
+        height: 1fr;
+        min-height: 3;
         border: solid $accent;
     }}
     CommitDialog #commit-buttons {{
@@ -1934,9 +1937,13 @@ class CommitDialog(ModalScreen["str | None"]):
             )
 
     def on_mount(self) -> None:
-        """Park the cursor at the end of the prefilled branch prefix so the
-        user types after it rather than before it."""
-        self.move_cursor_to(row=0, column=len(self.prefill))
+        """Park the cursor at the end of the prefill — after the branch
+        prefix, or after the last line of a message reopened from the commit
+        confirmation — so the user types after it rather than before it, and
+        a message taller than the text area is scrolled to where the cursor
+        is."""
+        lines = self.prefill.split("\n")
+        self.move_cursor_to(row=len(lines) - 1, column=len(lines[-1]))
 
     def move_cursor_to(self, *, row: int, column: int) -> None:
         """Put the text cursor at `row`/`column`, if there is a text area to

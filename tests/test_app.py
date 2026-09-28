@@ -6070,6 +6070,35 @@ class TestCommitDialogCss(unittest.TestCase):
         self.assertIn("width: 100%", body)
         self.assertNotIn("width: 70", body)
 
+    def test_commit_dialog_fills_the_screen_height(self):
+        """The body takes every row, not just what its content asks for."""
+        body = CommitDialog.DEFAULT_CSS.split("#commit-body")[1].split("}")[0]
+
+        self.assertIn("height: 100%", body)
+        self.assertNotIn("height: auto", body)
+
+    def test_the_text_area_takes_the_rows_left_over(self):
+        """A fixed height capped what could be seen of a message at ten rows;
+        the text area now grows with the screen and scrolls past it."""
+        text_area = CommitDialog.DEFAULT_CSS.split("#commit-message")[1].split("}")[0]
+
+        self.assertIn("height: 1fr", text_area)
+        self.assertNotIn("height: 10;", text_area)
+
+    def test_the_cursor_starts_at_the_end_of_the_prefill(self):
+        """After a branch prefix, and on the last line of a message reopened
+        from the confirmation — which is also what scrolls a long one there."""
+        for prefill, expected in (
+            ("", {"row": 0, "column": 0}),
+            ("main: ", {"row": 0, "column": 6}),
+            ("feat: x\n\nfirst\nlast line", {"row": 3, "column": 9}),
+        ):
+            with self.subTest(prefill=prefill):
+                dialog = CommitDialog(prefill=prefill)
+                with patch.object(dialog, "move_cursor_to") as move:
+                    dialog.on_mount()
+                move.assert_called_once_with(**expected)
+
 
 if __name__ == "__main__":
     unittest.main()

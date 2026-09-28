@@ -257,7 +257,9 @@ reload.
 
 `c` opens the commit dialog for the selected file(s) — after a `Stage N file(s)
 for commit?` prompt when any of them still has unstaged changes. The dialog
-spans the screen, and `F2` hands the message on to a `Commit N file(s)?`
+fills the whole screen, and its text box takes every row the rest of the dialog
+doesn't need; a longer message scrolls inside it, with the arrow keys,
+`PgUp`/`PgDn` or the mouse wheel. `F2` hands the message on to a `Commit N file(s)?`
 confirmation listing every command the commit will run. `Y` runs them; `N` puts
 you back in the dialog with the message you just wrote.
 
