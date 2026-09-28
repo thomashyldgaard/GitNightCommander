@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -8,6 +10,7 @@ from gitnc.git import (
     GitEntry,
     GitFilelist,
     GitStatus,
+    _entry_stat,
 )
 from tests.gitprocess import fake_git_processes
 
@@ -35,6 +38,53 @@ class TestGitStatus(unittest.TestCase):
         )
         self.assertIs(entries[1].code.staged, GitStatus.MODIFIED)
         self.assertIs(entries[1].code.unstaged, GitStatus.UNMODIFIED)
+
+    def test_load_status_lists_every_untracked_file_by_default(self):
+        with fake_git_processes() as git:
+            GIT().load_status()
+        self.assertIn("--untracked-files=all", git.commands[0])
+
+    def test_load_status_can_collapse_untracked_directories(self):
+        """Git decides which directories collapse: `normal` folds only a
+        directory with nothing tracked in it, reported with a trailing `/`."""
+        with fake_git_processes(stdout="?? vendor/\n M app.py\n") as git:
+            entries = GIT().load_status(collapse_untracked_dirs=True)
+        self.assertIn("--untracked-files=normal", git.commands[0])
+        self.assertEqual(
+            [e.filename for e in entries],
+            ["app.py", "vendor/"],
+        )
+
+    def test_index_of_falls_back_to_the_directory_a_file_collapsed_into(self):
+        filelist = GitFilelist(
+            [
+                GitEntry(GitCode.MODIFIED_UNMODIFIED, "app.py"),
+                GitEntry(GitCode.UNTRACKED_UNTRACKED, "vendor/"),
+            ]
+        )
+        self.assertEqual(
+            filelist.index_of(GitEntry(GitCode.UNTRACKED_UNTRACKED, "vendor/lib/a.py")), 1
+        )
+        self.assertIsNone(filelist.index_of(GitEntry(GitCode.UNTRACKED_UNTRACKED, "vendors.py")))
+
+    def test_collapsed_directory_shows_a_dir_marker_for_its_size(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.mkdir(os.path.join(root, "vendor"))
+            size, _ = _entry_stat(root, "vendor/", "%Y")
+        self.assertEqual(size, "<DIR>")
+
+    def test_collapsed_directory_content_lists_the_files_below_it(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "vendor", "lib"))
+            os.makedirs(os.path.join(root, "vendor", ".git"))
+            for name in ("vendor/b.txt", "vendor/lib/a.py", "vendor/.git/HEAD"):
+                with open(os.path.join(root, name), "w") as fh:
+                    fh.write("x")
+            text = GIT(root).load_file_content(GitEntry(GitCode.UNTRACKED_UNTRACKED, "vendor/"))
+        self.assertEqual(
+            text.splitlines(),
+            ["Untracked directory: vendor/ (2 file(s))", "", "b.txt", os.path.join("lib", "a.py")],
+        )
 
     def test_git_filelist_is_the_view_model_for_short_and_long_lists(self):
         entry = GitEntry(GitCode.MODIFIED_UNMODIFIED, "pkg/a.py")

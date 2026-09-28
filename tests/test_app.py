@@ -315,6 +315,9 @@ try:
         CONFIRM_DIALOG_SCROLLBAR_WIDTH,
         CONFIRM_DIALOG_VISIBLE_COMMAND_ROWS,
         DEFAULT_BRANCH_DEFAULT,
+        FILE_LIST_FILTER_LABELS,
+        FILTER_NONE,
+        FILTER_UNTRACKED_DIRS,
         HELP_MENU,
         HELP_SHORTCUTS,
         MENU_BAR,
@@ -405,6 +408,9 @@ except ModuleNotFoundError as exc:
         CONFIRM_DIALOG_SCROLLBAR_WIDTH,
         CONFIRM_DIALOG_VISIBLE_COMMAND_ROWS,
         DEFAULT_BRANCH_DEFAULT,
+        FILE_LIST_FILTER_LABELS,
+        FILTER_NONE,
+        FILTER_UNTRACKED_DIRS,
         HELP_MENU,
         HELP_SHORTCUTS,
         MENU_BAR,
@@ -729,6 +735,7 @@ EXPECTED_SHORTCUTS: list[tuple[str, str, str]] = [
     ("f5", "refresh", "Refresh"),
     ("ctrl+o", "toggle_previous_screen", "Prev Screen"),
     ("f3", "toggle_file_list", "Short/long list"),
+    ("f", "toggle_file_filter", "Filter"),
     ("s", "stage_file", "Stage"),
     ("u", "unstage_file", "Unstage"),
     ("f7", "restore_file", "Restore"),
@@ -1230,10 +1237,13 @@ class TestKeyboardShortcutActions(unittest.TestCase):
 
         app.on_list_view_highlighted(event)
 
-        status_header.update.assert_called_once_with("1 file(s) changed | modified (not staged)")
+        status_header.update.assert_called_once_with(
+            "1 file(s) changed | Filter: none | modified (not staged)"
+        )
 
     def test_status_list_no_highlight_shows_only_file_count(self):
-        """With nothing highlighted the bottom status line is just the count."""
+        """With nothing highlighted the bottom status line is the count and the
+        filter."""
         app = _mock_app()
         app.status_entries = GitFilelist([GitEntry(GitCode.MODIFIED_UNMODIFIED, "pkg/thing.py")])
         status_header = MagicMock()
@@ -1243,7 +1253,7 @@ class TestKeyboardShortcutActions(unittest.TestCase):
 
         app._update_status_header()
 
-        status_header.update.assert_called_once_with("1 file(s) changed")
+        status_header.update.assert_called_once_with("1 file(s) changed | Filter: none")
 
     def test_restore_status_selection_updates_git_filelist_highlight(self):
         app = _mock_app()
@@ -1286,6 +1296,57 @@ class TestKeyboardShortcutActions(unittest.TestCase):
             app.action_toggle_file_list()
         to_short.assert_called_once_with()
         to_long.assert_not_called()
+
+    def test_toggle_file_filter_cycles_through_the_filters(self):
+        """f steps to the next filter and wraps back to the first."""
+        app = _mock_app()
+        self.assertEqual(app.file_list_filter, FILTER_NONE)
+        app.action_toggle_file_filter()
+        self.assertEqual(app.file_list_filter, FILTER_UNTRACKED_DIRS)
+        app.action_toggle_file_filter()
+        self.assertEqual(app.file_list_filter, FILTER_NONE)
+
+    def test_file_filter_reloads_status_with_untracked_dirs_collapsed(self):
+        """The filter is git's own `--untracked-files` choice, so switching it
+        reloads the list rather than hiding rows of the current one."""
+        app = _mock_app()
+        app.action_file_filter_untracked_dirs()
+        app.git.load_status.assert_called_once_with(collapse_untracked_dirs=True)
+
+        app.git.load_status.reset_mock()
+        app.action_file_filter_none()
+        app.git.load_status.assert_called_once_with(collapse_untracked_dirs=False)
+
+    def test_status_line_shows_the_active_filter(self):
+        app = _mock_app()
+        app.file_list_filter = FILTER_UNTRACKED_DIRS
+        app.status_entries = GitFilelist([GitEntry(GitCode.UNTRACKED_UNTRACKED, "vendor/")])
+        status_header = MagicMock()
+        app.query_one.side_effect = lambda sel, *a, **k: (
+            status_header if sel == "#status-header" else MagicMock()
+        )
+
+        app._update_status_header()
+
+        status_header.update.assert_called_once_with(
+            f"1 file(s) changed | {FILE_LIST_FILTER_LABELS[FILTER_UNTRACKED_DIRS]}"
+        )
+
+    def test_file_filter_keeps_the_highlight_on_the_folder_a_file_folded_into(self):
+        """Collapsing an untracked directory takes its files out of the list;
+        the highlight moves to the `dir/` row that replaced them."""
+        app = _mock_app()
+        folded = GitEntry(GitCode.UNTRACKED_UNTRACKED, "vendor/lib/a.py")
+        app.status_entries = GitFilelist([folded])
+        app._current_status_entry = MagicMock(return_value=folded)
+        collapsed = GitEntry(GitCode.UNTRACKED_UNTRACKED, "vendor/")
+        app.git.load_status.return_value = GitFilelist(
+            [GitEntry(GitCode.MODIFIED_UNMODIFIED, "app.py"), collapsed]
+        )
+        with patch.object(app, "_schedule_restore_selection") as restore:
+            app.action_file_filter_untracked_dirs()
+        restore.assert_called_once_with(folded, refocus_active_view=False)
+        self.assertEqual(app.status_entries.index_of(folded), 1)
 
     def test_action_long_file_list_adds_long_mode_css_class(self):
         app = _mock_app()
@@ -2089,7 +2150,7 @@ class TestStageUnstageConfirmation(unittest.TestCase):
             dialog.confirm()
 
         app.git.stage_file.assert_called_once_with("pkg/a.py")
-        app.git.load_status.assert_called_once_with()
+        app.git.load_status.assert_called_once_with(collapse_untracked_dirs=False)
         after_refresh.assert_called_once_with(app._restore_status_selection_and_focus, entry)
         self.assertEqual(status_list.index, 0)
 
@@ -3734,6 +3795,19 @@ class TestMenuStyling(unittest.TestCase):
                     {MENU_RADIO_ON, MENU_RADIO_OFF, MENU_MARKER_BLANK},
                 )
 
+    def test_file_menu_marks_the_active_filter(self):
+        """The filters are a radio group of their own, next to the modes."""
+        app = GitNightCommanderApp()
+        for active, on_label, off_label in (
+            (FILTER_NONE, "All files", "Collapse untracked folders"),
+            (FILTER_UNTRACKED_DIRS, "Collapse untracked folders", "All files"),
+        ):
+            with self.subTest(active=active):
+                app.file_list_filter = active
+                labels = [_menu_plain_label(label) for label, _ in app._file_menu_items()]
+                self.assertIn(f"{MENU_RADIO_ON}{MENU_MARKER_GAP}{on_label}", labels)
+                self.assertIn(f"{MENU_RADIO_OFF}{MENU_MARKER_GAP}{off_label}", labels)
+
     def test_dropdown_labels_carry_right_aligned_shortcut_hints(self):
         """Entries with a keyboard binding advertise it in a hint column, so
         the menu teaches the shortcut instead of hiding it."""
@@ -4724,7 +4798,7 @@ class TestCommitFlow(unittest.TestCase):
         app.git.stage_file.side_effect = staged.add
         app.git.unstage_file.side_effect = staged.discard
         app.git.staged_filenames.side_effect = lambda: set(staged)
-        app.git.load_status.side_effect = lambda: GitFilelist(
+        app.git.load_status.side_effect = lambda **_: GitFilelist(
             [
                 GitEntry(
                     GitCode.MODIFIED_UNMODIFIED

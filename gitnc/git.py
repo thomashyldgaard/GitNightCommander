@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import subprocess
 import threading
 from collections.abc import Iterator, Mapping, Sequence
@@ -246,6 +247,7 @@ class GitEntry:
 
 DEFAULT_MTIME_FORMAT = "%Y-%m-%d %H:%M"
 DEFAULT_STATUS_WIDTH = len("Status")
+DIRECTORY_SIZE_LABEL = "<DIR>"
 
 
 def _format_size(size: int) -> str:
@@ -265,10 +267,13 @@ def _entry_stat(repo_path: str, filename: str, mtime_format: str) -> tuple[str, 
         st = os.stat(os.path.join(repo_path, candidate))
     except OSError:
         return "-", "-"
+    # A collapsed untracked directory: its inode size says nothing about what
+    # is inside it, so show a marker the way a file manager does.
+    size = DIRECTORY_SIZE_LABEL if stat.S_ISDIR(st.st_mode) else _format_size(st.st_size)
     # Read as UTC then convert back to the local zone, so the displayed wall
     # clock matches the user's timezone without relying on a naive datetime.
     local_mtime = datetime.fromtimestamp(st.st_mtime, tz=UTC).astimezone()
-    return _format_size(st.st_size), local_mtime.strftime(mtime_format)
+    return size, local_mtime.strftime(mtime_format)
 
 
 STATUS_COLORS: dict[GitStatus, str] = {
@@ -361,6 +366,11 @@ class GitFilelist(Sequence[GitEntry]):
         for index, candidate in enumerate(self.entries):
             if candidate.filename == entry.filename:
                 return index
+        # A file the list now shows folded into its untracked directory's
+        # `dir/` row: that row is where the file went.
+        for index, candidate in enumerate(self.entries):
+            if candidate.filename.endswith("/") and entry.filename.startswith(candidate.filename):
+                return index
         return None
 
     def set_highlighted_index(self, index: int | None) -> GitEntry | None:
@@ -439,6 +449,23 @@ class GitFilelist(Sequence[GitEntry]):
             )
             for entry in self.entries
         ]
+
+
+def _untracked_directory_listing(path: str, display_name: str) -> str:
+    """The files under a collapsed untracked directory, one relative path a line.
+
+    Stands in for file content when the file list shows a whole untracked
+    directory as one entry, so opening it still shows what staging or
+    cleaning it would take along.
+    """
+    files: list[str] = []
+    for root, dirs, names in os.walk(path):
+        # An untracked nested repository collapses to `dir/` as well; its
+        # object store is not what anyone opening the entry wants to read.
+        dirs[:] = sorted(d for d in dirs if d != ".git")
+        files.extend(os.path.relpath(os.path.join(root, n), path) for n in sorted(names))
+    header = f"Untracked directory: {display_name} ({len(files)} file(s))"
+    return "\n".join([header, "", *files])
 
 
 class GIT:
@@ -593,6 +620,8 @@ class GIT:
         """
         cwd, name = self._entry_target(entry)
         path = os.path.join(cwd, name)
+        if os.path.isdir(path):
+            return _untracked_directory_listing(path, entry.filename)
         try:
             with open(path, "rb") as fh:
                 data = fh.read()
@@ -603,22 +632,29 @@ class GIT:
             return f"Binary file: {entry.filename}"
         return data.decode("utf-8", errors="replace")
 
-    def load_status(self) -> GitFilelist:
+    def load_status(self, *, collapse_untracked_dirs: bool = False) -> GitFilelist:
         """Run git status --short and parse the output into a GitFilelist.
 
         `--untracked-files=all` expands untracked directories to the
         individual files inside them; gitignored files are excluded by
         default, so the listing already respects `.gitignore`.
 
+        *collapse_untracked_dirs* switches that to `--untracked-files=normal`,
+        which lists a directory holding nothing git has ever tracked as one
+        `dir/` entry instead of every file below it. Git makes the call, so a
+        directory with a tracked file anywhere inside still lists its
+        untracked files one by one.
+
         Initialized submodules are recursively expanded: their parent rows
         are replaced with rows for the inner files (filenames prefixed with
         the submodule path; ``submodule`` set on each inner entry).
         """
-        return GitFilelist(self._load_status_at(""))
+        untracked_files = "normal" if collapse_untracked_dirs else "all"
+        return GitFilelist(self._load_status_at("", untracked_files=untracked_files))
 
-    def _load_status_at(self, rel_root: str) -> list[GitEntry]:
+    def _load_status_at(self, rel_root: str, *, untracked_files: str) -> list[GitEntry]:
         abs_root = os.path.join(self.path, rel_root) if rel_root else self.path
-        result = self._run_in(abs_root, "status", "--short", "--untracked-files=all")
+        result = self._run_in(abs_root, "status", "--short", f"--untracked-files={untracked_files}")
         submodules = set(self._submodule_paths(abs_root))
         entries: list[GitEntry] = []
         for line in result.stdout.splitlines():
@@ -635,7 +671,7 @@ class GIT:
                 sub_abs = os.path.join(abs_root, name)
                 if self._is_initialized_submodule(sub_abs):
                     sub_rel = os.path.join(rel_root, name) if rel_root else name
-                    inner = self._load_status_at(sub_rel)
+                    inner = self._load_status_at(sub_rel, untracked_files=untracked_files)
                     if inner:
                         entries.extend(inner)
                         continue

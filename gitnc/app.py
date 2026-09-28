@@ -65,6 +65,20 @@ WIDGET_LOOKUP_ERRORS = (QueryError, ScreenStackError, NoActiveAppError)
 MODE_SHORT = "short"
 MODE_LONG = "long"
 
+# Quick filters for the file list, in the order `f` cycles through them, with
+# the text the status line under the list shows for each. FILTER_NONE lists
+# every file `git status` reports; FILTER_UNTRACKED_DIRS shows a directory
+# holding nothing git has ever tracked as one `dir/` row instead of every file
+# below it, which is what keeps a freshly unpacked tree from burying the
+# changes that matter.
+FILTER_NONE = "none"
+FILTER_UNTRACKED_DIRS = "untracked-dirs"
+FILE_LIST_FILTERS: list[str] = [FILTER_NONE, FILTER_UNTRACKED_DIRS]
+FILE_LIST_FILTER_LABELS: dict[str, str] = {
+    FILTER_NONE: "Filter: none",
+    FILTER_UNTRACKED_DIRS: "Filter: untracked folders collapsed",
+}
+
 # Menu entries that belong to a mutually exclusive group carry a radio marker
 # in a fixed-width gutter; every other entry pads that gutter with blanks so
 # all labels start in the same column no matter which mode is active.
@@ -219,6 +233,7 @@ SHORTCUTS: list[tuple[str, str, str, bool]] = [
     ("f5", "refresh", "Refresh", True),
     ("ctrl+o", "toggle_previous_screen", "Prev Screen", True),
     ("f3", "toggle_file_list", "Short/long list", True),
+    ("f", "toggle_file_filter", "Filter", False),
     ("s", "stage_file", "Stage", True),
     ("u", "unstage_file", "Unstage", True),
     ("f7", "restore_file", "Restore", True),
@@ -2606,6 +2621,7 @@ class GitNightCommanderApp(App):
         self.commits: list[Commit] = []
         self.status_filelist: GitFilelist = GitFilelist()
         self.file_list_mode: str = MODE_SHORT
+        self.file_list_filter: str = FILTER_NONE
         self._last_status_entry: GitEntry | None = None
         self._pending_commit_externals: list[str] = []
         self._pending_commit_staged: list[GitEntry] = []
@@ -2724,6 +2740,9 @@ class GitNightCommanderApp(App):
         def radio(mode: str) -> str:
             return MENU_RADIO_ON if self.file_list_mode == mode else MENU_RADIO_OFF
 
+        def filter_radio(file_filter: str) -> str:
+            return MENU_RADIO_ON if self.file_list_filter == file_filter else MENU_RADIO_OFF
+
         return [
             (
                 self._menu_label("&Short file list", marker=radio(MODE_SHORT)),
@@ -2732,6 +2751,16 @@ class GitNightCommanderApp(App):
             (
                 self._menu_label("&Long file list", marker=radio(MODE_LONG)),
                 "long_file_list",
+            ),
+            (
+                self._menu_label("&All files", marker=filter_radio(FILTER_NONE)),
+                "file_filter_none",
+            ),
+            (
+                self._menu_label(
+                    "Collapse &untracked folders", marker=filter_radio(FILTER_UNTRACKED_DIRS)
+                ),
+                "file_filter_untracked_dirs",
             ),
             (self._menu_label("&Refresh"), "refresh"),
             (self._menu_label("&Delete"), "delete_file"),
@@ -2834,6 +2863,7 @@ class GitNightCommanderApp(App):
         self._load_status_worker(
             serial=self._new_request("status"),
             previous_selections=set(self.status_filelist.selected_filenames),
+            collapse_untracked_dirs=self.file_list_filter == FILTER_UNTRACKED_DIRS,
             restore=restore,
             refocus=refocus,
             clear_diff=clear_diff,
@@ -2845,12 +2875,13 @@ class GitNightCommanderApp(App):
         *,
         serial: int,
         previous_selections: set[str],
+        collapse_untracked_dirs: bool,
         restore: GitEntry | None,
         refocus: bool,
         clear_diff: bool,
     ) -> None:
         """Off-thread half of `_load_status`: fetch only, touch no widgets."""
-        filelist = self.git.load_status()
+        filelist = self.git.load_status(collapse_untracked_dirs=collapse_untracked_dirs)
         mismatches = self.git.submodule_branch_mismatches()
         self.call_from_thread(
             self._apply_status,
@@ -2939,6 +2970,9 @@ class GitNightCommanderApp(App):
         except WIDGET_LOOKUP_ERRORS:
             return
         message = self.status_filelist.status_message()
+        # Before the entry's description, whose length changes with every
+        # row, so the filter state stays in one place on the line.
+        message = f"{message} | {FILE_LIST_FILTER_LABELS[self.file_list_filter]}"
         entry = self.status_filelist.highlighted_entry
         if entry is not None:
             message = f"{message} | {entry.code.long_description}"
@@ -3287,6 +3321,33 @@ class GitNightCommanderApp(App):
     def action_long_file_list(self) -> None:
         self.action_close_menus()
         self._set_file_list_mode(MODE_LONG)
+
+    def action_toggle_file_filter(self) -> None:
+        """f: step to the next quick filter of the file list."""
+        self.action_close_menus()
+        index = FILE_LIST_FILTERS.index(self.file_list_filter)
+        self._set_file_list_filter(FILE_LIST_FILTERS[(index + 1) % len(FILE_LIST_FILTERS)])
+
+    def action_file_filter_none(self) -> None:
+        self.action_close_menus()
+        self._set_file_list_filter(FILTER_NONE)
+
+    def action_file_filter_untracked_dirs(self) -> None:
+        self.action_close_menus()
+        self._set_file_list_filter(FILTER_UNTRACKED_DIRS)
+
+    def _set_file_list_filter(self, file_filter: str) -> None:
+        """Apply *file_filter* and reload the file list under it.
+
+        The full-screen diff is left because the file it shows may be one the
+        new filter folds into its directory; the highlight follows the file
+        to that directory's row (see `GitFilelist.index_of`).
+        """
+        selected_entry = self._current_status_entry() or self._last_status_entry
+        self.file_list_filter = file_filter
+        self._update_status_header()
+        self._leave_diff_view()
+        self._load_status(restore=selected_entry)
 
     def _set_file_list_mode(self, mode: str) -> None:
         selected_entry = self._current_status_entry() or self._last_status_entry

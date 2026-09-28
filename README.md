@@ -20,6 +20,9 @@ Main features:
 - **Easy diff view for file changes** — press `Enter` on any file to see its
   diff, either inline beside the file list or full-screen; `F3` toggles
   between the two modes.
+- **Quick filter for untracked folders** — `f` collapses a folder whose files
+  have never been added to git into one row instead of listing every file
+  below it; the status line under the file list shows which filter is active.
 - **Optional commit-message drafting** — Settings hooks any command line you
   name (e.g. `claude -p`) into the commit dialog's `F4` button, with support
   for picking between several numbered suggestions.
@@ -214,6 +217,7 @@ To pin this per-workspace, create `.vscode/settings.json`:
 |-----|---------|
 | `F1` | Keyboard shortcut reference |
 | `F5` | Refresh |
+| `f` | Toggle the file-list filter: all files, or untracked folders collapsed to one row |
 | `F7` | Restore selected file(s) to their `HEAD` state (asks first) |
 | `F8` / `Del` | Delete selected file(s) (asks first) |
 | `s` / `u` | Stage / unstage selected file(s) (asks first) |
