@@ -310,7 +310,9 @@ try:
         COMMIT_EDITOR_COMMAND,
         COMMIT_EDITOR_ENVIRONMENT,
         COMMIT_EDITOR_SCISSORS,
+        CONFIRM_DIALOG_CHROME_HEIGHT,
         CONFIRM_DIALOG_CHROME_WIDTH,
+        CONFIRM_DIALOG_COMMANDS_PADDING_HEIGHT,
         CONFIRM_DIALOG_MIN_TEXT_WIDTH,
         CONFIRM_DIALOG_SCROLLBAR_WIDTH,
         CONFIRM_DIALOG_VISIBLE_COMMAND_ROWS,
@@ -403,7 +405,9 @@ except ModuleNotFoundError as exc:
         COMMIT_EDITOR_COMMAND,
         COMMIT_EDITOR_ENVIRONMENT,
         COMMIT_EDITOR_SCISSORS,
+        CONFIRM_DIALOG_CHROME_HEIGHT,
         CONFIRM_DIALOG_CHROME_WIDTH,
+        CONFIRM_DIALOG_COMMANDS_PADDING_HEIGHT,
         CONFIRM_DIALOG_MIN_TEXT_WIDTH,
         CONFIRM_DIALOG_SCROLLBAR_WIDTH,
         CONFIRM_DIALOG_VISIBLE_COMMAND_ROWS,
@@ -3026,14 +3030,15 @@ class TestConfirmDialogWidth(unittest.TestCase):
     line, stops at the screen edge, and marks whatever didn't fit.
     """
 
-    def _screen(self, width):
+    def _screen(self, width, height=24):
         """Patch in an app of `width` columns — the stubs have no screen."""
         app = MagicMock()
         app.size.width = width
+        app.size.height = height
         return patch.object(ConfirmDialog, "app", new_callable=PropertyMock, return_value=app)
 
-    def _dialog(self, commands, prompt="Stage 1 file(s) for commit?"):
-        return ConfirmDialog(prompt=prompt, commands=commands)
+    def _dialog(self, commands, prompt="Stage 1 file(s) for commit?", fill_height=False):
+        return ConfirmDialog(prompt=prompt, commands=commands, fill_height=fill_height)
 
     def test_width_follows_the_widest_command_line(self):
         dialog = self._dialog(["git add -- " + "a" * 60])
@@ -3097,6 +3102,33 @@ class TestConfirmDialogWidth(unittest.TestCase):
 
         self.assertEqual(dialog.text_width(), 0)
         self.assertEqual(dialog.command_lines(dialog.text_width()), dialog.command_lines())
+
+    def test_the_command_list_is_capped_unless_asked_to_fill_the_height(self):
+        dialog = self._dialog(["git add -- a.py"])
+        with self._screen(80, height=50):
+            self.assertEqual(dialog.visible_command_rows(), CONFIRM_DIALOG_VISIBLE_COMMAND_ROWS)
+
+    def test_fill_height_grows_the_command_list_to_the_screen(self):
+        """A commit's file list is shown whole when the screen has room."""
+        dialog = self._dialog(["git add -- a.py"], fill_height=True)
+        with self._screen(80, height=50):
+            self.assertEqual(
+                dialog.visible_command_rows(),
+                50 - CONFIRM_DIALOG_CHROME_HEIGHT - CONFIRM_DIALOG_COMMANDS_PADDING_HEIGHT,
+            )
+
+    def test_fill_height_reserves_a_scrollbar_only_past_the_screen(self):
+        rows = CONFIRM_DIALOG_VISIBLE_COMMAND_ROWS + 1
+        dialog = self._dialog(["git add -- a.py"] * rows, fill_height=True)
+        with self._screen(80, height=50):
+            self.assertEqual(dialog.scrollbar_width(), 0)
+        with self._screen(80, height=rows):
+            self.assertEqual(dialog.scrollbar_width(), CONFIRM_DIALOG_SCROLLBAR_WIDTH)
+
+    def test_fill_height_on_an_unmeasured_screen_keeps_the_cap(self):
+        dialog = self._dialog(["git add -- a.py"], fill_height=True)
+
+        self.assertEqual(dialog.visible_command_rows(), CONFIRM_DIALOG_VISIBLE_COMMAND_ROWS)
 
     def test_dialog_may_use_the_full_screen_width(self):
         """The box used to stop at 90% of the screen, which cut the file list
@@ -4739,6 +4771,7 @@ class TestCommitFlow(unittest.TestCase):
         app.action_commit_files()
 
         dialogs.assert_confirm("Stage 1 file(s) for commit?", ["git add -- pkg/a.py"])
+        self.assertTrue(dialogs.assert_open().fill_height)
         self._assert_no_commit_dialog(dialogs)
         app.git.stage_file.assert_not_called()
 
@@ -5004,6 +5037,7 @@ class TestCommitFlow(unittest.TestCase):
 
         self.assertEqual(dialogs.prompt(), "Commit 1 file(s)?")
         self.assertEqual(dialogs.commands(), ["git commit -m feat: x"])
+        self.assertTrue(dialogs.pushed[-1].fill_height)
         app.git.commit.assert_not_called()
 
     def test_the_confirmation_shows_only_the_subject_of_a_long_message(self):

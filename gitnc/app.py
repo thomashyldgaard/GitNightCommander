@@ -684,9 +684,16 @@ class DropdownMenu(Widget):
 
 
 CONFIRM_DIALOG_MAX_COMMAND_ROWS = 10
-# The commands area spends its first and last row on `padding: 1 0`, so this
-# many commands fit before it starts scrolling.
-CONFIRM_DIALOG_VISIBLE_COMMAND_ROWS = CONFIRM_DIALOG_MAX_COMMAND_ROWS - 2
+# The commands area spends its first and last row on `padding: 1 0`.
+CONFIRM_DIALOG_COMMANDS_PADDING_HEIGHT = 2
+# So this many commands fit before it starts scrolling.
+CONFIRM_DIALOG_VISIBLE_COMMAND_ROWS = (
+    CONFIRM_DIALOG_MAX_COMMAND_ROWS - CONFIRM_DIALOG_COMMANDS_PADDING_HEIGHT
+)
+# `border: solid` (1 row top and bottom) plus `padding: 1 2` (1 row top and
+# bottom) plus the prompt and hint rows: what the popup spends on everything
+# but the commands area, vertically.
+CONFIRM_DIALOG_CHROME_HEIGHT = 6
 # `border: solid` (1 cell each side) plus `padding: 1 2` (2 cells each side):
 # what the popup spends on chrome, i.e. how much narrower its text is than the
 # box that holds it.
@@ -948,6 +955,10 @@ class ConfirmDialog(ModalScreen[bool]):
     `Screen._modal_binding_chain`), so the file list underneath keeps neither
     focus nor bindings — no key handled here can leak into an app action, and
     no app action can re-enter while it is open.
+
+    With `fill_height` the command list is not capped at
+    `CONFIRM_DIALOG_VISIBLE_COMMAND_ROWS` but grows to the screen height, so a
+    commit's whole file list can be read without scrolling when it fits.
     """
 
     # The screen itself handles every key, so nothing inside should take
@@ -986,10 +997,11 @@ class ConfirmDialog(ModalScreen[bool]):
     }}
     """
 
-    def __init__(self, prompt: str, commands: list[str]) -> None:
+    def __init__(self, prompt: str, commands: list[str], *, fill_height: bool = False) -> None:
         super().__init__()
         self.prompt = prompt
         self.commands = list(commands)
+        self.fill_height = fill_height
 
     def compose(self) -> ComposeResult:
         theme = _dialog_theme(self)
@@ -1007,7 +1019,12 @@ class ConfirmDialog(ModalScreen[bool]):
             body.styles.width = text_width + CONFIRM_DIALOG_CHROME_WIDTH + self.scrollbar_width()
         with body:
             yield Label(self.prompt, id="confirm-prompt")
-            with ScrollableContainer(id="confirm-commands"):
+            commands_area = ScrollableContainer(id="confirm-commands")
+            if self.fill_height:
+                commands_area.styles.max_height = (
+                    self.visible_command_rows() + CONFIRM_DIALOG_COMMANDS_PADDING_HEIGHT
+                )
+            with commands_area:
                 yield Static(
                     "\n".join(self.command_lines(text_width)),
                     id="confirm-commands-content",
@@ -1035,9 +1052,25 @@ class ConfirmDialog(ModalScreen[bool]):
         border, where it is clipped and the user never sees that there is
         more of the list below.
         """
-        if len(self.commands) <= CONFIRM_DIALOG_VISIBLE_COMMAND_ROWS:
+        if len(self.commands) <= self.visible_command_rows():
             return 0
         return CONFIRM_DIALOG_SCROLLBAR_WIDTH
+
+    def visible_command_rows(self) -> int:
+        """How many commands show before the list scrolls: the CSS cap, or
+        with `fill_height` whatever the screen has room for once the rest of
+        the popup is drawn. An unmeasured screen falls back to the cap.
+        """
+        if not self.fill_height:
+            return CONFIRM_DIALOG_VISIBLE_COMMAND_ROWS
+        try:
+            screen_height = self.app.size.height
+        except NO_SCREEN_ERRORS:
+            return CONFIRM_DIALOG_VISIBLE_COMMAND_ROWS
+        if not screen_height:
+            return CONFIRM_DIALOG_VISIBLE_COMMAND_ROWS
+        room = screen_height - CONFIRM_DIALOG_CHROME_HEIGHT - CONFIRM_DIALOG_COMMANDS_PADDING_HEIGHT
+        return max(room, 1)
 
     def _available_text_width(self) -> int:
         """How much text the screen has room for, chrome subtracted."""
@@ -3661,12 +3694,17 @@ class GitNightCommanderApp(App):
         commands: list[str],
         on_confirm: Callable[[], None],
         on_cancel: Callable[[], object] | None = None,
+        *,
+        fill_height: bool = False,
     ) -> None:
         """Ask for Y/N confirmation, running `on_confirm` only if confirmed.
 
         N (or Esc) hands focus back to the active view unless `on_cancel` says
         otherwise — the commit confirmation uses it to reopen the message
         dialog instead of throwing the message away.
+
+        `fill_height` lets the command list grow to the screen height (see
+        `ConfirmDialog`); the commit prompts use it to show every file.
         """
 
         def resolved(confirmed: bool | None) -> None:
@@ -3677,7 +3715,10 @@ class GitNightCommanderApp(App):
             else:
                 self._focus_active_view()
 
-        self.push_screen(ConfirmDialog(prompt=prompt, commands=commands), callback=resolved)
+        self.push_screen(
+            ConfirmDialog(prompt=prompt, commands=commands, fill_height=fill_height),
+            callback=resolved,
+        )
 
     def _run_stage(self, entry: GitEntry) -> None:
         result = self.git.stage_entry(entry)
@@ -3826,6 +3867,7 @@ class GitNightCommanderApp(App):
                 f"Stage {len(to_stage)} file(s) for commit?",
                 commands,
                 proceed,
+                fill_height=True,
             )
             return
         proceed()
@@ -4141,6 +4183,7 @@ class GitNightCommanderApp(App):
             commands,
             lambda: self._commit_submit(message),
             lambda: self._edit_commit_message(message),
+            fill_height=True,
         )
 
     def _commit_submit(self, message: str) -> None:
