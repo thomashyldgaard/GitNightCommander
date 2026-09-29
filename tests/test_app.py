@@ -630,6 +630,92 @@ class TestGitNightCommanderApp(unittest.TestCase):
 
         _DialogProbe(app).assert_not_shown()
 
+    def test_on_mount_does_not_ask_outside_a_submodule(self):
+        app = _mock_app()
+        app._load_status = MagicMock()
+
+        with (
+            patch.object(app, "_load_saved_theme"),
+            patch.object(_app_module, "started_from_midnight_commander", return_value=False),
+        ):
+            app.on_mount()
+
+        _DialogProbe(app).assert_not_shown()
+        app._load_status.assert_called_once_with()
+
+    def test_on_mount_offers_the_outermost_superproject(self):
+        app = _mock_app()
+        app._load_status = MagicMock()
+        app.git.repository_chain.return_value = ["/top/mid/sub", "/top/mid", "/top"]
+
+        with (
+            patch.object(app, "_load_saved_theme"),
+            patch.object(_app_module, "started_from_midnight_commander", return_value=False),
+        ):
+            app.on_mount()
+
+        _DialogProbe(app).assert_confirm(
+            _app_module.SUPERPROJECT_PROMPT,
+            ["submodule  /top/mid/sub", "submodule  /top/mid", "top-level  /top"],
+        )
+        # Nothing is read until the user has picked the repository.
+        app._load_status.assert_not_called()
+
+    def test_superproject_confirm_switches_to_the_top_level_repository(self):
+        app = _mock_app()
+        app._load_status = MagicMock()
+        app.git.repository_chain.return_value = ["/top/sub", "/top"]
+
+        with (
+            patch.object(app, "_load_saved_theme"),
+            patch.object(_app_module, "started_from_midnight_commander", return_value=False),
+        ):
+            app.on_mount()
+        with (
+            patch.object(_app_module, "GIT") as git_class,
+            patch.object(_app_module.os, "chdir") as chdir,
+        ):
+            _DialogProbe(app).confirm()
+
+        self.assertEqual(app.repo_path, "/top")
+        git_class.assert_called_once_with("/top")
+        self.assertIs(app.git, git_class.return_value)
+        chdir.assert_called_once_with("/top")
+        app._load_status.assert_called_once_with()
+
+    def test_superproject_cancel_stays_in_the_submodule(self):
+        app = _mock_app()
+        app._load_status = MagicMock()
+        app.git.repository_chain.return_value = ["/top/sub", "/top"]
+        git = app.git
+
+        with (
+            patch.object(app, "_load_saved_theme"),
+            patch.object(_app_module, "started_from_midnight_commander", return_value=False),
+        ):
+            app.on_mount()
+        with patch.object(_app_module.os, "chdir") as chdir:
+            _DialogProbe(app).cancel()
+
+        self.assertIs(app.git, git)
+        self.assertEqual(app.repo_path, ".")
+        chdir.assert_not_called()
+        app._load_status.assert_called_once_with()
+
+    def test_midnight_commander_warning_follows_the_superproject_question(self):
+        app = _mock_app()
+        app.git.repository_chain.return_value = ["/top/sub", "/top"]
+
+        with (
+            patch.object(app, "_load_saved_theme"),
+            patch.object(_app_module, "started_from_midnight_commander", return_value=True),
+        ):
+            app.on_mount()
+            self.assertIsInstance(_DialogProbe(app).assert_open(), _app_module.ConfirmDialog)
+            _DialogProbe(app).cancel()
+
+        self.assertIsInstance(_DialogProbe(app).pushed[-1], _app_module.MidnightCommanderDialog)
+
     def test_midnight_commander_dialog_keys(self):
         dialog_class = _app_module.MidnightCommanderDialog
         for key, expected in (("c", True), ("enter", True), ("e", False), ("escape", False)):
@@ -852,6 +938,8 @@ def _mock_app() -> Any:
     app.git = MagicMock()
     app.git.load_status.return_value = GitFilelist()
     app.git.load_commits.return_value = []
+    # Not a submodule, so on_mount goes straight to the first load.
+    app.git.repository_chain.return_value = ["/repo"]
     # Route entry-aware methods through the legacy filename-keyed mocks so
     # assertions on stage_file / unstage_file / stage_command / commit / etc.
     # keep working without per-test rewires. Submodule-specific behaviour is

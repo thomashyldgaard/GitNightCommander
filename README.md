@@ -10,7 +10,9 @@ Main features:
 
 - **Easy handling of commits in projects that use git submodules** — staging
   and committing walk the submodules for you, and pull/push warn when a
-  submodule sits on a branch of its own.
+  submodule sits on a branch of its own. Started inside a submodule — at any
+  depth of nesting — the app offers to open the top-level repository instead
+  (`Y` / `N`).
 - **`Ctrl+O` switches to the command line** — drops the app to a `$SHELL` in
   the same terminal; press `Ctrl+O` again to switch back with the TUI right
   where you left it. Started from Midnight Commander's command line, mc keeps

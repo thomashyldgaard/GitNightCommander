@@ -132,6 +132,9 @@ MIDNIGHT_COMMANDER_WARNING = (
 )
 # Wide enough for the warning to wrap into a few readable lines.
 MIDNIGHT_COMMANDER_DIALOG_WIDTH = 60
+# Asked at startup when the repository is a submodule, however deeply nested:
+# the question is always about the outermost repository.
+SUPERPROJECT_PROMPT = "This repository is a submodule. Start in the top-level repository?"
 
 # Where the commit message is written: the app's own dialog, the editor named
 # by $EDITOR, or a command line typed into Options -> Settings. The last two
@@ -2804,9 +2807,47 @@ class GitNightCommanderApp(App):
 
     def on_mount(self) -> None:
         self._load_saved_theme()
+        self._offer_top_level_repository(then=self._start)
+
+    def _start(self) -> None:
         self._load_status()
         self._load_commits()
         self._warn_if_started_from_midnight_commander()
+
+    def _offer_top_level_repository(self, then: Callable[[], None]) -> None:
+        """Ask to move to the outermost superproject when started in a submodule.
+
+        Runs *then* once the question is answered (or at once, when there is
+        nothing to ask), so the first `git status` reads the repository the
+        user settled on rather than one it is about to leave. The chain is a
+        `git rev-parse` per nesting level, which doesn't grow with the repo,
+        so it runs inline.
+        """
+        chain = self.git.repository_chain()
+        if len(chain) < 2:
+            then()
+            return
+        rows = [f"submodule  {path}" for path in chain[:-1]]
+        rows.append(f"top-level  {chain[-1]}")
+
+        def confirmed() -> None:
+            self._switch_repository(chain[-1])
+            then()
+
+        self._show_confirm(SUPERPROJECT_PROMPT, rows, on_confirm=confirmed, on_cancel=then)
+
+    def _switch_repository(self, path: str) -> None:
+        """Point the app at *path*; the caller reloads the views.
+
+        The process moves there too, so the `Ctrl+O` shell and the tools run
+        from the previous screen start where the file list is.
+        """
+        self.repo_path = path
+        self.git = GIT(path)
+        try:
+            os.chdir(path)
+        except OSError:
+            pass
 
     def _warn_if_started_from_midnight_commander(self) -> None:
         if not started_from_midnight_commander():

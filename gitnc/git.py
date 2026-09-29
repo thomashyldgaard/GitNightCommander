@@ -705,6 +705,28 @@ class GIT:
         name = (result.stdout or "").strip()
         return name or None
 
+    def repository_chain(self) -> list[str]:
+        """Return the working trees from this repository out to the top-level one.
+
+        The first entry is this repository's own top level, and each one after
+        it is the superproject the previous one is a submodule of, so the last
+        is the repository nothing contains. A repository that isn't a submodule
+        yields a single entry; a path outside any repository yields none.
+        """
+        result = self._run("rev-parse", "--show-toplevel")
+        toplevel = (result.stdout or "").strip()
+        if result.returncode != 0 or not toplevel:
+            return []
+        chain = [toplevel]
+        while True:
+            result = self._run_in(chain[-1], "rev-parse", "--show-superproject-working-tree")
+            parent = (result.stdout or "").strip()
+            # The membership check stops a misconfigured gitlink that points
+            # back into the chain from walking in circles.
+            if result.returncode != 0 or not parent or parent in chain:
+                return chain
+            chain.append(parent)
+
     def _branch_name_in(self, cwd: str) -> str | None:
         result = self._run_in(cwd, "branch", "--show-current")
         name = (result.stdout or "").strip()

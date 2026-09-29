@@ -734,6 +734,48 @@ class TestShutdown(unittest.TestCase):
         self.assertEqual(result.stdout, "")
 
 
+class TestRepositoryChain(unittest.TestCase):
+    """`GIT.repository_chain()`: this repo's top level out to the outermost superproject."""
+
+    def test_not_a_submodule_is_a_chain_of_one(self):
+        git = GIT("/top/src")
+        with fake_git_processes(results=[(0, "/top\n", ""), (0, "", "")]) as processes:
+            self.assertEqual(git.repository_chain(), ["/top"])
+
+        self.assertEqual(
+            processes.commands[1][-3:], ["/top", "rev-parse", "--show-superproject-working-tree"]
+        )
+
+    def test_nested_submodules_walk_out_to_the_top_level(self):
+        git = GIT("/top/mid/sub/src")
+        results = [
+            (0, "/top/mid/sub\n", ""),
+            (0, "/top/mid\n", ""),
+            (0, "/top\n", ""),
+            (0, "", ""),
+        ]
+        with fake_git_processes(results=results) as processes:
+            chain = git.repository_chain()
+
+        self.assertEqual(chain, ["/top/mid/sub", "/top/mid", "/top"])
+        # Each step asks from the repository the previous step found.
+        self.assertEqual(
+            [argv[4] for argv in processes.commands[1:]], ["/top/mid/sub", "/top/mid", "/top"]
+        )
+
+    def test_outside_a_repository_is_empty(self):
+        git = GIT("/tmp")
+        with fake_git_processes(returncode=128, stderr="fatal: not a git repository") as processes:
+            self.assertEqual(git.repository_chain(), [])
+
+        self.assertEqual(processes.call_count, 1)
+
+    def test_a_cycle_stops_the_walk(self):
+        git = GIT("/a")
+        with fake_git_processes(results=[(0, "/a\n", ""), (0, "/b\n", ""), (0, "/a\n", "")]):
+            self.assertEqual(git.repository_chain(), ["/a", "/b"])
+
+
 class TestRemoteCommands(unittest.TestCase):
     """git pull / push: upstream detection and the argv it produces."""
 
