@@ -117,6 +117,13 @@ class UITheme:
     footer_background: str = "$panel"
     footer_foreground: str = "$foreground"
 
+    # CSS-side color of a warning notification: the toast's text and the bar
+    # on its left edge. The default is the palette's own warning role, which
+    # is what Textual paints that bar in anyway; a theme that has spent
+    # $warning on something else (midnight-commander's cyan chrome) names a
+    # color that still reads as a warning.
+    warning_notification: str = "$warning"
+
     # CSS-side palette for the file list cursor + multi-selection.
     cursor_row_background: str = "$primary"
     cursor_row_foreground: str = "$foreground"
@@ -184,6 +191,7 @@ class UITheme:
             "menu-bar-foreground": self._resolve_refs(self.menu_bar_foreground),
             "footer-background": self._resolve_refs(self.footer_background),
             "footer-foreground": self._resolve_refs(self.footer_foreground),
+            "warning-notification": self._resolve_refs(self.warning_notification),
             "cursor-row-background": self._resolve_refs(self.cursor_row_background),
             "cursor-row-foreground": self._resolve_refs(self.cursor_row_foreground),
             "selected-file-background": self._resolve_refs(self.selected_file_background),

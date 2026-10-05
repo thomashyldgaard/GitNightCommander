@@ -93,6 +93,13 @@ menu_bar_foreground: $background
 footer_background: $warning
 footer_foreground: $background
 
+# Warning notifications (the toast that says a commit message is about to be
+# prefixed with a branch the settings warn against): its text and the bar on
+# its left edge. $warning is this theme's cyan — the color of the menu bar,
+# which reads as chrome rather than as a warning — so the toast gets a red
+# of its own.
+warning_notification: '#FF5555'
+
 # CSS variables emitted for the file-list cursor and multi-selection.
 # Values may reference Textual palette variables with `$name` (e.g. `$primary`).
 # References are resolved against this theme's own fields when the CSS is generated.

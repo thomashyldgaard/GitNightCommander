@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import textwrap
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -815,6 +815,22 @@ def _caret_markup(text: str, *, column: int, style: str) -> str:
     return f"{_escape_markup(head)}[{style}]{_escape_markup(cell)}[/{style}]{_escape_markup(tail)}"
 
 
+def _branch_names(text: str) -> list[str]:
+    """The branch names in a settings value that lists several, separated by
+    spaces or commas — neither of which a branch name can contain."""
+    return [name for name in re.split(r"[\s,]+", text) if name]
+
+
+def _warned_commit_prefix(message: str, branches: Iterable[str]) -> str:
+    """Whichever of `branches` the message is prefixed with, or "".
+
+    The message is what is checked, not the branch that is checked out: the
+    prefill is editable, so the prefix can have been removed since — or typed
+    in by hand with the prefix setting off.
+    """
+    return next((branch for branch in branches if message.startswith(f"{branch}:")), "")
+
+
 def _setting_str(settings: Mapping[str, object], key: str, default: str) -> str:
     """`settings[key]` when it holds a string, else `default`.
 
@@ -897,6 +913,7 @@ class SettingsValues(NamedTuple):
     parse_suggestions: bool = False
     editor: str = COMMIT_EDITOR_BUILTIN
     editor_command: str = ""
+    prefix_warn_branches: str = ""
 
 
 # Rows of the settings dialog, in the order they are drawn. The checkbox rows
@@ -906,14 +923,15 @@ class SettingsValues(NamedTuple):
 # Experimental heading.
 SETTINGS_ROW_BRANCH = 0
 SETTINGS_ROW_PREFIX = 1
-SETTINGS_ROW_EDITOR_BUILTIN = 2
-SETTINGS_ROW_EDITOR_ENVIRONMENT = 3
-SETTINGS_ROW_EDITOR_COMMAND = 4
-SETTINGS_ROW_EDITOR_COMMAND_LINE = 5
-SETTINGS_ROW_COMMAND = 6
-SETTINGS_ROW_PROMPT = 7
-SETTINGS_ROW_PARSE = 8
-SETTINGS_ROW_COUNT = 9
+SETTINGS_ROW_PREFIX_WARN = 2
+SETTINGS_ROW_EDITOR_BUILTIN = 3
+SETTINGS_ROW_EDITOR_ENVIRONMENT = 4
+SETTINGS_ROW_EDITOR_COMMAND = 5
+SETTINGS_ROW_EDITOR_COMMAND_LINE = 6
+SETTINGS_ROW_COMMAND = 7
+SETTINGS_ROW_PROMPT = 8
+SETTINGS_ROW_PARSE = 9
+SETTINGS_ROW_COUNT = 10
 
 # Which editor each radio row selects.
 SETTINGS_EDITOR_ROWS: dict[int, str] = {
@@ -1284,6 +1302,7 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
     # rows differ only by their label and the value they carry.
     TEXT_ROWS: ClassVar[dict[int, str]] = {
         SETTINGS_ROW_BRANCH: "_default_branch",
+        SETTINGS_ROW_PREFIX_WARN: "_prefix_warn_branches",
         SETTINGS_ROW_EDITOR_COMMAND_LINE: "_editor_command",
         SETTINGS_ROW_COMMAND: "_draft_command",
         SETTINGS_ROW_PROMPT: "_draft_prompt",
@@ -1303,11 +1322,13 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
         parse_suggestions: bool = False,
         editor: str = COMMIT_EDITOR_BUILTIN,
         editor_command: str = "",
+        prefix_warn_branches: str = "",
     ) -> None:
         super().__init__()
         self._cursor: int = 0
         self._default_branch: str = default_branch
         self._branch_prefix: bool = branch_prefix
+        self._prefix_warn_branches: str = prefix_warn_branches
         self._draft_command: str = draft_command
         self._draft_prompt: str = draft_prompt
         self._parse_suggestions: bool = parse_suggestions
@@ -1522,6 +1543,12 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
                 "Use branch name as prefix in commit messages",
             )
         )
+        lines.append(self._text_row(SETTINGS_ROW_PREFIX_WARN, "      Warn on prefix: "))
+        lines.append(
+            f"[{theme.dialog_hint}]"
+            "    (branch names, separated by spaces, e.g. master main)"
+            f"[/{theme.dialog_hint}]"
+        )
         lines.append("")
         lines.append(self._section_header("Commit message editor"))
         lines.append("")
@@ -1600,6 +1627,7 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
             parse_suggestions=self._parse_suggestions,
             editor=self._editor,
             editor_command=self._editor_command,
+            prefix_warn_branches=self._prefix_warn_branches,
         )
 
 
@@ -2641,6 +2669,15 @@ class GitNightCommanderApp(App):
     ]
 
     CSS = """
+    /* Warning notifications take the theme's own color for them instead of
+       $warning, which a theme may have spent on its chrome. */
+    Toast.-warning {
+        border-left: outer $warning-notification;
+        color: $warning-notification;
+    }
+    Toast.-warning .toast--title {
+        color: $warning-notification;
+    }
     Screen {
         layout: horizontal;
         layers: default overlay;
@@ -4014,6 +4051,12 @@ class GitNightCommanderApp(App):
         self._pending_commit_targets = list(targets)
         branch = self._commit_branch_prefix()
         prefill = f"{branch}: " if branch else ""
+        warning = self._commit_prefix_warning(prefill)
+        if warning:
+            # Up front as well as in the question asked after the message:
+            # the prefix is already known here, and this is before the
+            # message has been written around it.
+            self.notify(warning, severity="warning")
         self._edit_commit_message(prefill)
 
     def _edit_commit_message(self, message: str) -> None:
@@ -4287,7 +4330,29 @@ class GitNightCommanderApp(App):
         if message is None:
             self._commit_cancel()
         else:
+            self._confirm_commit_prefix(message)
+
+    def _confirm_commit_prefix(self, message: str) -> None:
+        """Ask about a branch prefix the settings warn against, before the
+        commit confirmation rather than as a row inside it.
+
+        A question of its own has to be answered; a row under a list of
+        commands only has to be overlooked. It comes here rather than on the
+        message dialog because this is where the message is final, whichever
+        editor wrote it. Y goes on to the commit confirmation, N reopens the
+        message — the same way back that confirmation offers — and a message
+        without such a prefix goes straight through.
+        """
+        warning = self._commit_prefix_warning(message)
+        if not warning:
             self._confirm_commit(message)
+            return
+        self._show_confirm(
+            f"{warning}. Continue?",
+            [_commit_message_subject(message)],
+            lambda: self._confirm_commit(message),
+            lambda: self._edit_commit_message(message),
+        )
 
     def _confirm_commit(self, message: str) -> None:
         """Show what the commit will run and ask before running it.
@@ -4314,6 +4379,21 @@ class GitNightCommanderApp(App):
             lambda: self._edit_commit_message(message),
             fill_height=True,
         )
+
+    def _commit_prefix_warning(self, message: str) -> str:
+        """The warning for a message prefixed with a branch named in the
+        `commit_prefix_warn_branches` setting, or "" when it isn't.
+
+        One text for the notification the message editor opens with and the
+        question asked once the message is written, so the two can't drift.
+        """
+        branches = _branch_names(
+            _setting_str(self._load_settings(), "commit_prefix_warn_branches", "")
+        )
+        branch = _warned_commit_prefix(message, branches)
+        if not branch:
+            return ""
+        return f"Warning: commit message is prefixed with branch '{branch}'"
 
     def _commit_submit(self, message: str) -> None:
         result = self.git.commit_with_selection(self._pending_commit_targets, message)
@@ -4575,6 +4655,7 @@ class GitNightCommanderApp(App):
                 parse_suggestions=bool(settings.get("commit_draft_parse_suggestions", False)),
                 editor=_setting_str(settings, "commit_editor", COMMIT_EDITOR_BUILTIN),
                 editor_command=_setting_str(settings, "commit_editor_command", ""),
+                prefix_warn_branches=_setting_str(settings, "commit_prefix_warn_branches", ""),
             ),
             callback=self._settings_result,
         )
@@ -4592,6 +4673,7 @@ class GitNightCommanderApp(App):
         settings["commit_draft_parse_suggestions"] = values.parse_suggestions
         settings["commit_editor"] = values.editor
         settings["commit_editor_command"] = values.editor_command
+        settings["commit_prefix_warn_branches"] = values.prefix_warn_branches
         if not self._save_settings(settings):
             self.notify("Settings saved (could not write to disk)")
         else:

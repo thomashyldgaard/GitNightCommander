@@ -97,6 +97,11 @@ menu_bar_foreground: $foreground
 footer_background: $panel
 footer_foreground: $foreground
 
+# Warning notifications (the toast that says a commit message is about to be
+# prefixed with a branch the settings warn against): its text and the bar on
+# its left edge.
+warning_notification: $warning
+
 # CSS variables emitted for the file-list cursor and multi-selection.
 # Values may reference Textual palette variables with `$name` (e.g. `$primary`).
 # References are resolved against this theme's own fields when the CSS is generated.

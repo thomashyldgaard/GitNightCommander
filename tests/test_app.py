@@ -346,6 +346,7 @@ try:
         SETTINGS_ROW_EDITOR_COMMAND_LINE,
         SETTINGS_ROW_EDITOR_ENVIRONMENT,
         SETTINGS_ROW_PARSE,
+        SETTINGS_ROW_PREFIX_WARN,
         SETTINGS_ROW_PROMPT,
         SETTINGS_SECTION_WIDTH,
         SHORTCUT_ALIASES,
@@ -441,6 +442,7 @@ except ModuleNotFoundError as exc:
         SETTINGS_ROW_EDITOR_COMMAND_LINE,
         SETTINGS_ROW_EDITOR_ENVIRONMENT,
         SETTINGS_ROW_PARSE,
+        SETTINGS_ROW_PREFIX_WARN,
         SETTINGS_ROW_PROMPT,
         SETTINGS_SECTION_WIDTH,
         SHORTCUT_ALIASES,
@@ -3394,6 +3396,36 @@ class TestSettingsDialog(unittest.TestCase):
         self.assertEqual(dialog.get_values().draft_prompt, "a ")
         self.assertFalse(dialog.get_values().branch_prefix)
 
+    def test_the_warned_prefixes_are_typed_under_the_prefix_checkbox(self):
+        dialog = SettingsDialog(prefix_warn_branches="master")
+        for _ in range(SETTINGS_ROW_PREFIX_WARN):
+            dialog.on_key(_key_event("down"))
+        self.assertEqual(dialog._cursor, SETTINGS_ROW_PREFIX_WARN)
+
+        for key, character in (("space", None), ("m", "m")):
+            dialog.on_key(_key_event(key, character=character))
+
+        self.assertEqual(dialog.get_values().prefix_warn_branches, "master m")
+        self.assertFalse(dialog.get_values().branch_prefix)
+
+    def test_the_warned_prefixes_round_trip_through_the_settings_file(self):
+        app = _mock_app()
+        with patch.object(
+            app, "_load_settings", return_value={"commit_prefix_warn_branches": "master main"}
+        ):
+            app.action_settings()
+        values = _pushed_screen(app).get_values()
+        self.assertEqual(values.prefix_warn_branches, "master main")
+
+        saved: dict[str, object] = {}
+        with (
+            patch.object(app, "_load_settings", return_value={}),
+            patch.object(app, "_save_settings", side_effect=lambda s: saved.update(s) or True),
+        ):
+            app._settings_result(values)
+
+        self.assertEqual(saved["commit_prefix_warn_branches"], "master main")
+
     def test_cursor_wraps_over_every_row(self):
         dialog = SettingsDialog()
 
@@ -4681,6 +4713,7 @@ class TestUIThemeCssVariables(unittest.TestCase):
         "menu-bar-foreground",
         "footer-background",
         "footer-foreground",
+        "warning-notification",
         "cursor-row-background",
         "cursor-row-foreground",
         "selected-file-background",
@@ -4720,6 +4753,28 @@ class TestUIThemeCssVariables(unittest.TestCase):
             self.skipTest("Theme stub does not expose variables")
         for field_name in self._SEMANTIC_FIELDS:
             self.assertNotIn("$", variables[field_name])
+
+
+class TestWarningNotificationThemeColor(unittest.TestCase):
+    """A warning toast is painted from the theme's `warning_notification`
+    field rather than from `$warning`, which a theme may use for chrome."""
+
+    def test_the_default_is_the_palette_warning_role(self):
+        from gitnc.ui_theme import UITheme
+
+        theme = UITheme(name="plain", primary="#123456", warning="#abcdef")
+
+        self.assertEqual(theme.css_variables()["warning-notification"], "#abcdef")
+
+    def test_midnight_commander_warns_in_red_not_in_its_chrome_cyan(self):
+        css_vars = MIDNIGHT_COMMANDER_THEME.css_variables()
+
+        self.assertEqual(css_vars["warning-notification"], "#FF5555")
+        self.assertNotEqual(css_vars["warning-notification"], MIDNIGHT_COMMANDER_THEME.warning)
+
+    def test_the_app_css_paints_warning_toasts_from_the_variable(self):
+        self.assertIn("border-left: outer $warning-notification;", GitNightCommanderApp.CSS)
+        self.assertIn("color: $warning-notification;", GitNightCommanderApp.CSS)
 
 
 class TestTextSelectionThemeColors(unittest.TestCase):
@@ -5194,6 +5249,97 @@ class TestCommitFlow(unittest.TestCase):
         self.assertEqual(dialogs.commands(), ["git commit -m feat: x"])
         self.assertTrue(dialogs.pushed[-1].fill_height)
         app.git.commit.assert_not_called()
+
+    def _warned_app(self):
+        entry = GitEntry(GitCode.MODIFIED_UNMODIFIED, "pkg/a.py")
+        app, dialogs, _ = self._app([entry], staged={"pkg/a.py"})
+        app._load_settings = MagicMock(return_value={"commit_prefix_warn_branches": "main, master"})
+        app.action_commit_files()
+        return app, dialogs
+
+    def test_a_warned_prefix_is_asked_about_before_the_commit_confirmation(self):
+        app, dialogs = self._warned_app()
+
+        dialogs._resolve("master: fix x")
+
+        self.assertEqual(
+            dialogs.prompt(),
+            "Warning: commit message is prefixed with branch 'master'. Continue?",
+        )
+        self.assertEqual(dialogs.commands(), ["master: fix x"])
+        app.git.commit.assert_not_called()
+
+    def test_accepting_the_prefix_warning_goes_on_to_the_commit_confirmation(self):
+        app, dialogs = self._warned_app()
+        dialogs._resolve("master: fix x")
+
+        dialogs.confirm()
+
+        self.assertEqual(dialogs.prompt(), "Commit 1 file(s)?")
+        self.assertEqual(dialogs.commands(), ["git commit -m master: fix x"])
+        app.git.commit.assert_not_called()
+
+    def test_declining_the_prefix_warning_reopens_the_message(self):
+        app, dialogs = self._warned_app()
+        dialogs._resolve("master: fix x")
+
+        dialogs.cancel()
+
+        reopened = dialogs.pushed[-1]
+        self.assertIsInstance(reopened, CommitDialog)
+        self.assertEqual(reopened.prefill, "master: fix x")
+        app.git.commit.assert_not_called()
+
+    def test_a_warned_prefix_is_announced_when_the_message_editor_opens(self):
+        entry = GitEntry(GitCode.MODIFIED_UNMODIFIED, "pkg/a.py")
+        app, dialogs, _ = self._app([entry], staged={"pkg/a.py"}, branch="master")
+        app._load_settings = MagicMock(
+            return_value={
+                "branch_prefix_in_commits": True,
+                "commit_prefix_warn_branches": "master",
+            }
+        )
+
+        with patch.object(app, "notify") as notify:
+            app.action_commit_files()
+
+        self.assertEqual(self._commit_screen(dialogs).prefill, "master: ")
+        notify.assert_called_once_with(
+            "Warning: commit message is prefixed with branch 'master'", severity="warning"
+        )
+
+    def test_an_unlisted_prefix_opens_the_message_editor_quietly(self):
+        entry = GitEntry(GitCode.MODIFIED_UNMODIFIED, "pkg/a.py")
+        app, dialogs, _ = self._app([entry], staged={"pkg/a.py"}, branch="feature")
+        app._load_settings = MagicMock(
+            return_value={
+                "branch_prefix_in_commits": True,
+                "commit_prefix_warn_branches": "master",
+            }
+        )
+
+        with patch.object(app, "notify") as notify:
+            app.action_commit_files()
+
+        self.assertEqual(self._commit_screen(dialogs).prefill, "feature: ")
+        notify.assert_not_called()
+
+    def test_other_prefixes_go_straight_to_the_commit_confirmation(self):
+        """Only a whole listed name followed by the colon counts — not a
+        branch that merely starts with one, and not the name mid-message."""
+        entry = GitEntry(GitCode.MODIFIED_UNMODIFIED, "pkg/a.py")
+        for message in ("master-fix: x", "feature: merge master: x", "masterful change"):
+            with self.subTest(message=message):
+                app, dialogs, _ = self._app([entry], staged={"pkg/a.py"})
+                app._load_settings = MagicMock(
+                    return_value={"commit_prefix_warn_branches": "master"}
+                )
+                app.action_commit_files()
+
+                dialogs._resolve(message)
+
+                self.assertEqual(dialogs.prompt(), "Commit 1 file(s)?")
+                self.assertEqual(dialogs.commands(), [f"git commit -m {message}"])
 
     def test_the_confirmation_shows_only_the_subject_of_a_long_message(self):
         """The popup renders one command per row, so a multi-line `-m` has to

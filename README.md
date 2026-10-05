@@ -272,6 +272,12 @@ Options -> Settings configures the things it uses:
 - **Use branch name as prefix in commit messages** — prefills the message with
   `<branch>: `, and puts that prefix in front of a drafted message that does not
   already start with the branch name.
+- **Warn on prefix** — branch names, separated by spaces or commas, that should
+  not end up in front of a commit message (e.g. `master main`). A message that
+  starts with `<name>:` is asked about in a confirmation of its own before the
+  `Commit N file(s)?` one: `Y` continues, `N` puts you back in the message to
+  change it. When the branch prefix setting prefills such a name, the same
+  warning also pops up as the message editor opens.
 - **Commit message editor** — where the message is written:
   - **Built-in editor** (the default) is the commit dialog described above.
   - **$EDITOR** runs the editor named by the `EDITOR` environment variable;
