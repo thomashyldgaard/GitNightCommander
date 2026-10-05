@@ -44,6 +44,7 @@ fmt = [
     "ruff format gitnc tests",
 ]
 start = "python -m gitnc {args}"
+rebuild = "hatch build --clean {args}"
 
 [tool.ruff]
 line-length = 100

@@ -92,6 +92,7 @@ first use, so no manual venv activation is needed for the commands below.
 
 ```sh
 hatch build              # sdist + wheel into dist/
+hatch run rebuild        # same, removing the old artifacts from dist/ first
 ```
 
 The artifacts land in `dist/` as `gitnc-<version>-py3-none-any.whl` and
