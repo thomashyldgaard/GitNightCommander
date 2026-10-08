@@ -279,6 +279,13 @@ Options -> Settings configures the things it uses:
   `Commit N file(s)?` one: `Y` continues, `N` puts you back in the message to
   change it. When the branch prefix setting prefills such a name, the same
   warning also pops up as the message editor opens.
+- **Warn on prefix not matching** — optional; a regular expression the commit
+  message must start with (e.g. `[A-Z]+-\d+:` for a ticket number). It describes
+  the prefix only — it is matched at the start of the message, so no `^` and no
+  trailing `.*` are needed. A message that does not start with a match gets the
+  same confirmation and the same up-front warning as **Warn on prefix**; when
+  both settings object, the one question names both. A pattern that does not
+  compile is flagged in the settings dialog and reported in that question.
 - **Commit message editor** — where the message is written:
   - **Built-in editor** (the default) is the commit dialog described above.
   - **$EDITOR** runs the editor named by the `EDITOR` environment variable;

@@ -831,6 +831,25 @@ def _warned_commit_prefix(message: str, branches: Iterable[str]) -> str:
     return next((branch for branch in branches if message.startswith(f"{branch}:")), "")
 
 
+def _is_valid_pattern(pattern: str) -> bool:
+    """Whether `pattern` compiles as a regular expression."""
+    try:
+        re.compile(pattern)
+    except re.error:
+        return False
+    return True
+
+
+def _starts_with_pattern(message: str, pattern: str) -> bool:
+    """Whether `message` starts with something `pattern` matches.
+
+    `re.match` anchors at the start and stops where the pattern does, so the
+    setting describes the prefix alone — no `^` in front, and no `.*` behind
+    it for the rest of the message.
+    """
+    return re.match(pattern, message) is not None
+
+
 def _setting_str(settings: Mapping[str, object], key: str, default: str) -> str:
     """`settings[key]` when it holds a string, else `default`.
 
@@ -914,6 +933,7 @@ class SettingsValues(NamedTuple):
     editor: str = COMMIT_EDITOR_BUILTIN
     editor_command: str = ""
     prefix_warn_branches: str = ""
+    prefix_require_pattern: str = ""
 
 
 # Rows of the settings dialog, in the order they are drawn. The checkbox rows
@@ -924,14 +944,15 @@ class SettingsValues(NamedTuple):
 SETTINGS_ROW_BRANCH = 0
 SETTINGS_ROW_PREFIX = 1
 SETTINGS_ROW_PREFIX_WARN = 2
-SETTINGS_ROW_EDITOR_BUILTIN = 3
-SETTINGS_ROW_EDITOR_ENVIRONMENT = 4
-SETTINGS_ROW_EDITOR_COMMAND = 5
-SETTINGS_ROW_EDITOR_COMMAND_LINE = 6
-SETTINGS_ROW_COMMAND = 7
-SETTINGS_ROW_PROMPT = 8
-SETTINGS_ROW_PARSE = 9
-SETTINGS_ROW_COUNT = 10
+SETTINGS_ROW_PREFIX_PATTERN = 3
+SETTINGS_ROW_EDITOR_BUILTIN = 4
+SETTINGS_ROW_EDITOR_ENVIRONMENT = 5
+SETTINGS_ROW_EDITOR_COMMAND = 6
+SETTINGS_ROW_EDITOR_COMMAND_LINE = 7
+SETTINGS_ROW_COMMAND = 8
+SETTINGS_ROW_PROMPT = 9
+SETTINGS_ROW_PARSE = 10
+SETTINGS_ROW_COUNT = 11
 
 # Which editor each radio row selects.
 SETTINGS_EDITOR_ROWS: dict[int, str] = {
@@ -1303,6 +1324,7 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
     TEXT_ROWS: ClassVar[dict[int, str]] = {
         SETTINGS_ROW_BRANCH: "_default_branch",
         SETTINGS_ROW_PREFIX_WARN: "_prefix_warn_branches",
+        SETTINGS_ROW_PREFIX_PATTERN: "_prefix_require_pattern",
         SETTINGS_ROW_EDITOR_COMMAND_LINE: "_editor_command",
         SETTINGS_ROW_COMMAND: "_draft_command",
         SETTINGS_ROW_PROMPT: "_draft_prompt",
@@ -1323,12 +1345,14 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
         editor: str = COMMIT_EDITOR_BUILTIN,
         editor_command: str = "",
         prefix_warn_branches: str = "",
+        prefix_require_pattern: str = "",
     ) -> None:
         super().__init__()
         self._cursor: int = 0
         self._default_branch: str = default_branch
         self._branch_prefix: bool = branch_prefix
         self._prefix_warn_branches: str = prefix_warn_branches
+        self._prefix_require_pattern: str = prefix_require_pattern
         self._draft_command: str = draft_command
         self._draft_prompt: str = draft_prompt
         self._parse_suggestions: bool = parse_suggestions
@@ -1549,6 +1573,12 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
             "    (branch names, separated by spaces, e.g. master main)"
             f"[/{theme.dialog_hint}]"
         )
+        lines.append(
+            self._text_row(SETTINGS_ROW_PREFIX_PATTERN, "      Warn on prefix not matching: ")
+        )
+        lines.append(
+            f"[{theme.dialog_hint}]    ({self._prefix_pattern_hint()})[/{theme.dialog_hint}]"
+        )
         lines.append("")
         lines.append(self._section_header("Commit message editor"))
         lines.append("")
@@ -1595,6 +1625,15 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
             # values are already recorded, so there is simply nothing to paint.
             pass
 
+    def _prefix_pattern_hint(self) -> str:
+        """The line under the required-prefix row: what goes in it, or that
+        what is in it won't compile — said here, while it is being typed,
+        rather than first at the next commit."""
+        if not _is_valid_pattern(self._prefix_require_pattern):
+            return "not a valid regular expression"
+        example = _escape_markup(r"[A-Z]+-\d+:")
+        return f"optional regular expression for the start of the message, e.g. {example}"
+
     def _key_hint(self) -> str:
         """The key line under the dialog, which is not the same in a framed
         field: the arrows belong to the caret there, and Tab is what leaves."""
@@ -1628,6 +1667,7 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
             editor=self._editor,
             editor_command=self._editor_command,
             prefix_warn_branches=self._prefix_warn_branches,
+            prefix_require_pattern=self._prefix_require_pattern,
         )
 
 
@@ -4051,7 +4091,9 @@ class GitNightCommanderApp(App):
         self._pending_commit_targets = list(targets)
         branch = self._commit_branch_prefix()
         prefill = f"{branch}: " if branch else ""
-        warning = self._commit_prefix_warning(prefill)
+        # Only a prefill is checked: with nothing written yet there is no
+        # prefix to judge, and the required pattern would fail every time.
+        warning = self._commit_prefix_warning(prefill) if prefill else ""
         if warning:
             # Up front as well as in the question asked after the message:
             # the prefix is already known here, and this is before the
@@ -4333,8 +4375,9 @@ class GitNightCommanderApp(App):
             self._confirm_commit_prefix(message)
 
     def _confirm_commit_prefix(self, message: str) -> None:
-        """Ask about a branch prefix the settings warn against, before the
-        commit confirmation rather than as a row inside it.
+        """Ask about a prefix the settings warn against — a listed branch,
+        or one the required pattern doesn't match — before the commit
+        confirmation rather than as a row inside it.
 
         A question of its own has to be answered; a row under a list of
         commands only has to be overlooked. It comes here rather than on the
@@ -4381,19 +4424,35 @@ class GitNightCommanderApp(App):
         )
 
     def _commit_prefix_warning(self, message: str) -> str:
-        """The warning for a message prefixed with a branch named in the
-        `commit_prefix_warn_branches` setting, or "" when it isn't.
+        """The warning for a message whose prefix the settings object to, or
+        "" when they don't: it starts with a branch named in
+        `commit_prefix_warn_branches`, or it doesn't start with what the
+        `commit_prefix_require_pattern` regular expression asks for. Both
+        are reported when both apply.
 
         One text for the notification the message editor opens with and the
         question asked once the message is written, so the two can't drift.
+        The pattern is quoted with its brackets escaped, because both of
+        those render markup and a character class would be read as a tag.
         """
-        branches = _branch_names(
-            _setting_str(self._load_settings(), "commit_prefix_warn_branches", "")
-        )
+        settings = self._load_settings()
+        problems: list[str] = []
+        branches = _branch_names(_setting_str(settings, "commit_prefix_warn_branches", ""))
         branch = _warned_commit_prefix(message, branches)
-        if not branch:
+        if branch:
+            problems.append(f"is prefixed with branch '{branch}'")
+        pattern = _setting_str(settings, "commit_prefix_require_pattern", "")
+        if pattern.strip():
+            quoted = _escape_markup(pattern)
+            if not _is_valid_pattern(pattern):
+                # Said rather than skipped: a check that silently stopped
+                # checking would look exactly like a message that passed.
+                problems.append(f"can't be checked against invalid pattern '{quoted}'")
+            elif not _starts_with_pattern(message, pattern):
+                problems.append(f"does not start with a prefix matching '{quoted}'")
+        if not problems:
             return ""
-        return f"Warning: commit message is prefixed with branch '{branch}'"
+        return f"Warning: commit message {' and '.join(problems)}"
 
     def _commit_submit(self, message: str) -> None:
         result = self.git.commit_with_selection(self._pending_commit_targets, message)
@@ -4656,6 +4715,7 @@ class GitNightCommanderApp(App):
                 editor=_setting_str(settings, "commit_editor", COMMIT_EDITOR_BUILTIN),
                 editor_command=_setting_str(settings, "commit_editor_command", ""),
                 prefix_warn_branches=_setting_str(settings, "commit_prefix_warn_branches", ""),
+                prefix_require_pattern=_setting_str(settings, "commit_prefix_require_pattern", ""),
             ),
             callback=self._settings_result,
         )
@@ -4674,6 +4734,7 @@ class GitNightCommanderApp(App):
         settings["commit_editor"] = values.editor
         settings["commit_editor_command"] = values.editor_command
         settings["commit_prefix_warn_branches"] = values.prefix_warn_branches
+        settings["commit_prefix_require_pattern"] = values.prefix_require_pattern
         if not self._save_settings(settings):
             self.notify("Settings saved (could not write to disk)")
         else:

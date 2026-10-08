@@ -346,6 +346,7 @@ try:
         SETTINGS_ROW_EDITOR_COMMAND_LINE,
         SETTINGS_ROW_EDITOR_ENVIRONMENT,
         SETTINGS_ROW_PARSE,
+        SETTINGS_ROW_PREFIX_PATTERN,
         SETTINGS_ROW_PREFIX_WARN,
         SETTINGS_ROW_PROMPT,
         SETTINGS_SECTION_WIDTH,
@@ -442,6 +443,7 @@ except ModuleNotFoundError as exc:
         SETTINGS_ROW_EDITOR_COMMAND_LINE,
         SETTINGS_ROW_EDITOR_ENVIRONMENT,
         SETTINGS_ROW_PARSE,
+        SETTINGS_ROW_PREFIX_PATTERN,
         SETTINGS_ROW_PREFIX_WARN,
         SETTINGS_ROW_PROMPT,
         SETTINGS_SECTION_WIDTH,
@@ -3426,6 +3428,47 @@ class TestSettingsDialog(unittest.TestCase):
 
         self.assertEqual(saved["commit_prefix_warn_branches"], "master main")
 
+    def test_the_required_prefix_pattern_is_typed_under_the_warned_prefixes(self):
+        dialog = SettingsDialog(prefix_require_pattern="[A-Z]+")
+        for _ in range(SETTINGS_ROW_PREFIX_PATTERN):
+            dialog.on_key(_key_event("down"))
+        self.assertEqual(dialog._cursor, SETTINGS_ROW_PREFIX_PATTERN)
+        self.assertEqual(SETTINGS_ROW_PREFIX_PATTERN, SETTINGS_ROW_PREFIX_WARN + 1)
+
+        for key, character in (("minus", "-"), ("1", "1")):
+            dialog.on_key(_key_event(key, character=character))
+
+        self.assertEqual(dialog.get_values().prefix_require_pattern, "[A-Z]+-1")
+        self.assertEqual(dialog.get_values().prefix_warn_branches, "")
+
+    def test_the_required_prefix_pattern_hint_says_when_it_does_not_compile(self):
+        self.assertIn("optional", SettingsDialog()._prefix_pattern_hint())
+        self.assertIn(
+            "optional", SettingsDialog(prefix_require_pattern="[A-Z]+:")._prefix_pattern_hint()
+        )
+        self.assertEqual(
+            SettingsDialog(prefix_require_pattern="[A-Z")._prefix_pattern_hint(),
+            "not a valid regular expression",
+        )
+
+    def test_the_required_prefix_pattern_round_trips_through_the_settings_file(self):
+        app = _mock_app()
+        with patch.object(
+            app, "_load_settings", return_value={"commit_prefix_require_pattern": r"[A-Z]+-\d+:"}
+        ):
+            app.action_settings()
+        values = _pushed_screen(app).get_values()
+        self.assertEqual(values.prefix_require_pattern, r"[A-Z]+-\d+:")
+
+        saved: dict[str, object] = {}
+        with (
+            patch.object(app, "_load_settings", return_value={}),
+            patch.object(app, "_save_settings", side_effect=lambda s: saved.update(s) or True),
+        ):
+            app._settings_result(values)
+
+        self.assertEqual(saved["commit_prefix_require_pattern"], r"[A-Z]+-\d+:")
+
     def test_cursor_wraps_over_every_row(self):
         dialog = SettingsDialog()
 
@@ -5322,6 +5365,119 @@ class TestCommitFlow(unittest.TestCase):
             app.action_commit_files()
 
         self.assertEqual(self._commit_screen(dialogs).prefill, "feature: ")
+        notify.assert_not_called()
+
+    def _pattern_app(self, pattern: str, **settings: Any):
+        entry = GitEntry(GitCode.MODIFIED_UNMODIFIED, "pkg/a.py")
+        app, dialogs, _ = self._app([entry], staged={"pkg/a.py"})
+        app._load_settings = MagicMock(
+            return_value={"commit_prefix_require_pattern": pattern, **settings}
+        )
+        app.action_commit_files()
+        return app, dialogs
+
+    def test_a_message_missing_the_required_prefix_is_asked_about(self):
+        app, dialogs = self._pattern_app(r"[A-Z]+-\d+:")
+
+        dialogs._resolve("fix x")
+
+        self.assertEqual(
+            dialogs.prompt(),
+            "Warning: commit message does not start with a prefix matching"
+            r" '\[A-Z]+-\d+:'. Continue?",
+        )
+        self.assertEqual(dialogs.commands(), ["fix x"])
+        app.git.commit.assert_not_called()
+
+    def test_declining_the_required_prefix_warning_reopens_the_message(self):
+        _, dialogs = self._pattern_app(r"\w+-\d+:")
+        dialogs._resolve("fix x")
+
+        dialogs.cancel()
+
+        reopened = dialogs.pushed[-1]
+        self.assertIsInstance(reopened, CommitDialog)
+        self.assertEqual(reopened.prefill, "fix x")
+
+    def test_the_required_pattern_covers_only_the_start_of_the_message(self):
+        """No `.*` needed for the rest of the message, and a match further
+        in doesn't count as a prefix."""
+        for message, accepted in (
+            ("ABC-12: fix x\n\nbody", True),
+            ("ABC-12:", True),
+            ("fix ABC-12: x", False),
+            ("\nABC-12: x", False),
+        ):
+            with self.subTest(message=message):
+                _, dialogs = self._pattern_app(r"[A-Z]+-\d+:")
+
+                dialogs._resolve(message)
+
+                self.assertEqual(dialogs.prompt() == "Commit 1 file(s)?", accepted)
+
+    def test_a_blank_required_pattern_checks_nothing(self):
+        _, dialogs = self._pattern_app("  ")
+
+        dialogs._resolve("fix x")
+
+        self.assertEqual(dialogs.prompt(), "Commit 1 file(s)?")
+
+    def test_an_invalid_required_pattern_is_reported_instead_of_skipped(self):
+        _, dialogs = self._pattern_app("[A-Z")
+
+        dialogs._resolve("fix x")
+
+        self.assertEqual(
+            dialogs.prompt(),
+            r"Warning: commit message can't be checked against invalid pattern '\[A-Z'."
+            " Continue?",
+        )
+
+    def test_a_warned_branch_and_a_missing_prefix_are_reported_together(self):
+        _, dialogs = self._pattern_app(r"\d+:", commit_prefix_warn_branches="master")
+
+        dialogs._resolve("master: fix x")
+
+        self.assertEqual(
+            dialogs.prompt(),
+            "Warning: commit message is prefixed with branch 'master'"
+            r" and does not start with a prefix matching '\d+:'. Continue?",
+        )
+
+    def test_a_prefill_missing_the_required_prefix_is_announced_up_front(self):
+        entry = GitEntry(GitCode.MODIFIED_UNMODIFIED, "pkg/a.py")
+        for branch, warned in (("feature", True), ("ABC-12", False)):
+            with self.subTest(branch=branch):
+                app, _, _ = self._app([entry], staged={"pkg/a.py"}, branch=branch)
+                app._load_settings = MagicMock(
+                    return_value={
+                        "branch_prefix_in_commits": True,
+                        "commit_prefix_require_pattern": r"[A-Z]+-\d+:",
+                    }
+                )
+
+                with patch.object(app, "notify") as notify:
+                    app.action_commit_files()
+
+                if warned:
+                    notify.assert_called_once_with(
+                        "Warning: commit message does not start with a prefix matching"
+                        r" '\[A-Z]+-\d+:'",
+                        severity="warning",
+                    )
+                else:
+                    notify.assert_not_called()
+
+    def test_an_empty_prefill_is_not_checked_against_the_required_pattern(self):
+        """Nothing has been written yet, so there is no prefix to judge."""
+        entry = GitEntry(GitCode.MODIFIED_UNMODIFIED, "pkg/a.py")
+        app, dialogs, _ = self._app([entry], staged={"pkg/a.py"})
+        app._load_settings = MagicMock(return_value={"commit_prefix_require_pattern": r"\d+:"})
+
+        with patch.object(app, "notify") as notify:
+            app.action_commit_files()
+
+        self.assertEqual(self._commit_screen(dialogs).prefill, "")
         notify.assert_not_called()
 
     def test_other_prefixes_go_straight_to_the_commit_confirmation(self):
