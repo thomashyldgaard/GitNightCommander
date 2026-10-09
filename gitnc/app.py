@@ -728,14 +728,29 @@ def _strip_markup(text: str) -> str:
     return re.sub(r"\[/?[^\[\]]*\]", "", text)
 
 
+# A zero-width space: takes no cell on screen, and is enough to stop a
+# backslash from escaping the tag that follows it. See `_escape_markup()`.
+MARKUP_BACKSLASH_GUARD = "\u200b"
+
+
 def _escape_markup(text: str) -> str:
     """`text` rendered literally, i.e. with its markup tags neutralised.
 
     Settings values are typed by the user and drawn into a markup-rendering
     Static, so a prompt template mentioning "[files]" would otherwise be read
     as a style tag and swallowed.
+
+    A backslash at the end gets `MARKUP_BACKSLASH_GUARD` after it: whatever
+    the caller puts next is usually a tag — the caret's, a closing one — and
+    a "[" behind a backslash is never read as a tag, so the value's last
+    character would otherwise escape the caller's markup. Textual has no
+    escape for the backslash itself, hence a separator rather than a second
+    backslash.
     """
-    return text.replace("[", "\\[")
+    escaped = text.replace("[", "\\[")
+    if escaped.endswith("\\"):
+        escaped += MARKUP_BACKSLASH_GUARD
+    return escaped
 
 
 # One word of a settings field plus the spaces that follow it, or a run of
@@ -978,6 +993,8 @@ SETTINGS_FIELD_MAX_LINES = 8
 # field, which is the widest thing the dialog draws (its four-cell indent
 # plus the frame's two borders).
 SETTINGS_SECTION_WIDTH = 4 + SETTINGS_FIELD_WIDTH + 2
+# Shown beside the required-prefix help while the pattern doesn't compile.
+PREFIX_PATTERN_INVALID = "not a valid regular expression"
 
 
 def _dialog_theme(screen: ModalScreen) -> UITheme:
@@ -1576,9 +1593,7 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
         lines.append(
             self._text_row(SETTINGS_ROW_PREFIX_PATTERN, "      Warn on prefix not matching: ")
         )
-        lines.append(
-            f"[{theme.dialog_hint}]    ({self._prefix_pattern_hint()})[/{theme.dialog_hint}]"
-        )
+        lines.extend(self._prefix_pattern_hint())
         lines.append("")
         lines.append(self._section_header("Commit message editor"))
         lines.append("")
@@ -1625,14 +1640,28 @@ class SettingsDialog(ModalScreen["SettingsValues | None"]):
             # values are already recorded, so there is simply nothing to paint.
             pass
 
-    def _prefix_pattern_hint(self) -> str:
-        """The line under the required-prefix row: what goes in it, or that
-        what is in it won't compile — said here, while it is being typed,
-        rather than first at the next commit."""
-        if not _is_valid_pattern(self._prefix_require_pattern):
-            return "not a valid regular expression"
+    def _prefix_pattern_hint(self) -> list[str]:
+        """The lines under the required-prefix row: what goes in it, and —
+        added to that rather than put in its place — that what is in it won't
+        compile, said here, while it is being typed, rather than first at the
+        next commit.
+
+        The help stays because a pattern is invalid for most of the time it
+        takes to type one ("[" already is), which is exactly when the example
+        is being read. It is two fixed lines for the same reason: left to
+        wrap, the dialog grew and shrank a row as the pattern passed in and
+        out of compiling.
+        """
+        theme = _dialog_theme(self)
+        hint = theme.dialog_hint
         example = _escape_markup(r"[A-Z]+-\d+:")
-        return f"optional regular expression for the start of the message, e.g. {example}"
+        invalid = ""
+        if not _is_valid_pattern(self._prefix_require_pattern):
+            invalid = f" [{theme.warning_text}]{PREFIX_PATTERN_INVALID}[/{theme.warning_text}]"
+        return [
+            f"[{hint}]    (optional regular expression for the start of the message,[/{hint}]",
+            f"[{hint}]     e.g. {example})[/{hint}]{invalid}",
+        ]
 
     def _key_hint(self) -> str:
         """The key line under the dialog, which is not the same in a framed

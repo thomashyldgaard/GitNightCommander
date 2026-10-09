@@ -3442,14 +3442,31 @@ class TestSettingsDialog(unittest.TestCase):
         self.assertEqual(dialog.get_values().prefix_warn_branches, "")
 
     def test_the_required_prefix_pattern_hint_says_when_it_does_not_compile(self):
-        self.assertIn("optional", SettingsDialog()._prefix_pattern_hint())
+        invalid = _app_module.PREFIX_PATTERN_INVALID
+        for pattern in ("", "[A-Z]+:"):
+            hint = "\n".join(SettingsDialog(prefix_require_pattern=pattern)._prefix_pattern_hint())
+            self.assertIn("optional", hint)
+            self.assertNotIn(invalid, hint)
         self.assertIn(
-            "optional", SettingsDialog(prefix_require_pattern="[A-Z]+:")._prefix_pattern_hint()
+            invalid, "\n".join(SettingsDialog(prefix_require_pattern="[A-Z")._prefix_pattern_hint())
         )
-        self.assertEqual(
-            SettingsDialog(prefix_require_pattern="[A-Z")._prefix_pattern_hint(),
-            "not a valid regular expression",
-        )
+
+    def test_the_required_prefix_pattern_help_stays_while_the_pattern_is_invalid(self):
+        """A pattern starting with "[" doesn't compile until its "]" is typed,
+        and the example used to be replaced by the complaint for all of that
+        time — the help went away just as it was being followed."""
+        valid = SettingsDialog()._prefix_pattern_hint()
+        invalid = SettingsDialog(prefix_require_pattern="[")._prefix_pattern_hint()
+
+        # Same number of rows either way, so the dialog doesn't change height.
+        self.assertEqual(len(invalid), len(valid))
+        self.assertEqual(invalid[:-1], valid[:-1])
+        self.assertTrue(invalid[-1].startswith(valid[-1]))
+        for line in invalid:
+            self.assertLessEqual(
+                len(_app_module._strip_markup(line.replace("\\[", ""))),
+                _app_module.SETTINGS_SECTION_WIDTH,
+            )
 
     def test_the_required_prefix_pattern_round_trips_through_the_settings_file(self):
         app = _mock_app()
@@ -3709,6 +3726,30 @@ class TestSettingsDialog(unittest.TestCase):
         # And the caret stays after what was typed.
         dialog.on_key(_key_event("d", character="d"))
         self.assertEqual(dialog.get_values().draft_prompt, "abdc")
+
+    def test_a_backslash_does_not_escape_the_tag_that_follows_it(self):
+        """A regex ends in a backslash halfway through typing `\\d`, and the
+        caret's tag comes right after it: unguarded, the backslash escaped
+        that tag and its closing half had nothing to close — a MarkupError
+        that took the app down on the keypress."""
+        escape = _app_module._escape_markup
+        guard = _app_module.MARKUP_BACKSLASH_GUARD
+
+        self.assertEqual(escape("[A-Z]+-\\"), f"\\[A-Z]+-\\{guard}")
+        # Only the end needs it: inside the value the next character is text.
+        self.assertEqual(escape("\\d+:"), "\\d+:")
+        for value, column in (("\\", 1), ("\\", 0), ("a\\b", 1), ("a\\b\\", 4)):
+            markup = _app_module._caret_markup(value, column=column, style="reverse")
+            self.assertNotIn("\\[", markup)
+            try:
+                from textual.content import Content
+            except ImportError:
+                continue
+            # The real parser, when it is installed: the tags are read as
+            # tags, and the guard costs no cell.
+            content = Content.from_markup(markup)
+            self.assertEqual(content.plain.replace(guard, ""), value.ljust(column + 1))
+            self.assertEqual(content.cell_length, max(len(value), column + 1))
 
     def test_backspace_takes_the_character_in_front_of_the_caret(self):
         dialog = SettingsDialog(draft_prompt="abc")
