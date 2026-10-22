@@ -3689,7 +3689,7 @@ class GitNightCommanderApp(App):
         if entry.code.is_untracked:
             widget.show_content(text, entry.filename)
         else:
-            widget.show(text, entry.filename)
+            widget.show(text, entry.display_name)
 
     def _current_status_entry(self) -> GitEntry | None:
         status_list = self.query_one("#status_list", StatusList)
@@ -3797,11 +3797,11 @@ class GitNightCommanderApp(App):
         if entry is None:
             return
         if not entry.code.has_unstaged_changes:
-            self.notify(f"{entry.filename} has no unstaged changes")
+            self.notify(f"{entry.display_name} has no unstaged changes")
             return
         command = " ".join(self.git.stage_command_for(entry))
         self._show_confirm(
-            f"Stage {entry.filename}?",
+            f"Stage {entry.display_name}?",
             [command],
             lambda: self._run_stage(entry),
         )
@@ -3828,11 +3828,11 @@ class GitNightCommanderApp(App):
         if entry is None:
             return
         if not entry.code.has_staged_changes:
-            self.notify(f"{entry.filename} has no staged changes")
+            self.notify(f"{entry.display_name} has no staged changes")
             return
         command = " ".join(self.git.unstage_command_for(entry))
         self._show_confirm(
-            f"Unstage {entry.filename}?",
+            f"Unstage {entry.display_name}?",
             [command],
             lambda: self._run_unstage(entry),
         )
@@ -3868,11 +3868,11 @@ class GitNightCommanderApp(App):
         if entry is None:
             return
         if not entry.code.is_restorable:
-            self.notify(f"{entry.filename} cannot be restored")
+            self.notify(f"{entry.display_name} cannot be restored")
             return
         commands = [" ".join(argv) for argv in self.git.restore_commands(entry)]
         self._show_confirm(
-            f"Restore {entry.filename} to HEAD?",
+            f"Restore {entry.display_name} to HEAD?",
             commands,
             lambda: self._run_restore(entry),
         )
@@ -3901,7 +3901,9 @@ class GitNightCommanderApp(App):
         for entry in eligible:
             groups.setdefault(entry.code, []).append(entry)
         commands = self._format_delete_groups(groups)
-        prompt = f"Delete {len(eligible)} file(s)?" if multi else f"Delete {eligible[0].filename}?"
+        prompt = (
+            f"Delete {len(eligible)} file(s)?" if multi else f"Delete {eligible[0].display_name}?"
+        )
         self._show_confirm(
             prompt,
             commands,
@@ -3920,7 +3922,7 @@ class GitNightCommanderApp(App):
                 template = ["<file>" if part == sample_name else part for part in argv]
                 lines.append(f"  {' '.join(template)}")
             for entry in entries:
-                lines.append(f"  {entry.filename}")
+                lines.append(f"  {entry.display_name}")
         return lines
 
     def _show_confirm(
@@ -3957,12 +3959,14 @@ class GitNightCommanderApp(App):
 
     def _run_stage(self, entry: GitEntry) -> None:
         result = self.git.stage_entry(entry)
-        self._report_git_result(result, f"Staged {entry.filename}", "git add failed")
+        self._report_git_result(result, f"Staged {entry.display_name}", "git add failed")
         self._reload_status_keeping_selection(entry)
 
     def _run_unstage(self, entry: GitEntry) -> None:
         result = self.git.unstage_entry(entry)
-        self._report_git_result(result, f"Unstaged {entry.filename}", "git restore --staged failed")
+        self._report_git_result(
+            result, f"Unstaged {entry.display_name}", "git restore --staged failed"
+        )
         self._reload_status_keeping_selection(entry)
 
     def _run_restore(self, entry: GitEntry) -> None:
@@ -3973,7 +3977,7 @@ class GitNightCommanderApp(App):
             detail = f": {stderr}" if stderr else ""
             self.notify(f"git restore failed{detail}")
         else:
-            self.notify(f"Restored {entry.filename}")
+            self.notify(f"Restored {entry.display_name}")
         self._reload_status_keeping_selection(entry)
 
     def _run_restore_batch(self, entries: list[GitEntry]) -> None:
@@ -3981,7 +3985,7 @@ class GitNightCommanderApp(App):
         for entry in entries:
             results = self.git.restore_file(entry)
             if any(getattr(r, "returncode", 0) != 0 for r in results):
-                failures.append(entry.filename)
+                failures.append(entry.display_name)
         if failures:
             self.notify(f"git restore failed for {len(failures)} file(s): {', '.join(failures)}")
         else:
@@ -3993,7 +3997,7 @@ class GitNightCommanderApp(App):
         for entry in entries:
             results = self.git.delete_file(entry)
             if any(getattr(r, "returncode", 0) != 0 for r in results):
-                failures.append(entry.filename)
+                failures.append(entry.display_name)
         if failures:
             self.notify(f"delete failed for {len(failures)} file(s): {', '.join(failures)}")
         else:
@@ -4017,7 +4021,7 @@ class GitNightCommanderApp(App):
         for entry in entries:
             result = run_one(entry)
             if getattr(result, "returncode", 0) != 0:
-                failures.append(entry.filename)
+                failures.append(entry.display_name)
         if failures:
             self.notify(
                 f"{failure_prefix} failed for {len(failures)} file(s): {', '.join(failures)}"
@@ -4074,7 +4078,11 @@ class GitNightCommanderApp(App):
             return
 
         to_stage = [e for e in targets if e.code.has_unstaged_changes]
-        target_filenames = {e.filename for e in targets}
+        # Every path a target touches: `git diff --cached --name-only` names a
+        # rename by its new path (or by both, with rename detection off), and
+        # unstaging either half as an "external" splits the rename across
+        # two commits.
+        target_filenames = {path for e in targets for path in e.paths}
         # A submodule whose inner files we're committing will have its gitlink
         # re-staged automatically by commit_with_selection — never unstage it
         # as an "external" or we'd lose the pointer bump.
@@ -4185,7 +4193,7 @@ class GitNightCommanderApp(App):
         the built-in dialog instead. Only entering the suspension is guarded,
         as in `_draft_on_previous_screen()`.
         """
-        filenames = [entry.filename for entry in self._pending_commit_targets]
+        filenames = [entry.display_name for entry in self._pending_commit_targets]
         with ExitStack() as suspension:
             try:
                 suspension.enter_context(self.suspend())
@@ -4258,7 +4266,7 @@ class GitNightCommanderApp(App):
             self.notify(f"Could not read the commit message tool command: {command}")
             return
         template = _setting_str(settings, "commit_draft_prompt", COMMIT_DRAFT_PROMPT_DEFAULT)
-        filenames = [entry.filename for entry in self._pending_commit_targets]
+        filenames = [entry.display_name for entry in self._pending_commit_targets]
         prompt = commit_draft_prompt(template, filenames)
         dialog.set_drafting(True)
         if self._draft_on_previous_screen(dialog=dialog, argv=argv, prompt=prompt):

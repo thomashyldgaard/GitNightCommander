@@ -243,6 +243,28 @@ class GitEntry:
     code: GitCode
     filename: str
     submodule: str | None = None
+    # The path a rename or copy came from; *filename* is where it went.
+    orig_filename: str | None = None
+
+    @property
+    def display_name(self) -> str:
+        """`orig -> filename` for a rename or copy, the way `git status` shows it."""
+        if self.orig_filename is None:
+            return self.filename
+        return f"{self.orig_filename} -> {self.filename}"
+
+    @property
+    def paths(self) -> list[str]:
+        """Every path the change touches, for a pathspec that has to carry all of it.
+
+        A rename is a deletion of the old path plus an addition of the new
+        one, and a command given only the new path splits the two: an
+        unstage leaves the deletion staged, a diff shows a new file. A copy
+        leaves its source untouched, so the source is not part of the change.
+        """
+        if self.orig_filename is not None and self.code.contains(GitStatus.RENAMED):
+            return [self.orig_filename, self.filename]
+        return [self.filename]
 
 
 DEFAULT_MTIME_FORMAT = "%Y-%m-%d %H:%M"
@@ -262,9 +284,8 @@ def _format_size(size: int) -> str:
 
 
 def _entry_stat(repo_path: str, filename: str, mtime_format: str) -> tuple[str, str]:
-    candidate = filename.split(" -> ")[-1]
     try:
-        st = os.stat(os.path.join(repo_path, candidate))
+        st = os.stat(os.path.join(repo_path, filename))
     except OSError:
         return "-", "-"
     # A collapsed untracked directory: its inode size says nothing about what
@@ -419,7 +440,7 @@ class GitFilelist(Sequence[GitEntry]):
         submodule_color: str = SUBMODULE_COLOR,
     ) -> str:
         code = _render_status_code(entry, status_width, status_colors, submodule_color)
-        name = f"{_truncate(entry.filename, name_width):<{name_width}}"
+        name = f"{_truncate(entry.display_name, name_width):<{name_width}}"
         size, mtime = _entry_stat(repo_path, entry.filename, mtime_format)
         return f"{code}  {name}  {size:>{size_width}}  {mtime:>{mtime_width}}"
 
@@ -573,6 +594,13 @@ class GIT:
             return cwd, os.path.relpath(entry.filename, entry.submodule)
         return self.path, entry.filename
 
+    def _entry_pathspec(self, entry: GitEntry) -> tuple[str, list[str]]:
+        """(cwd, inner_paths): :meth:`_entry_target` for every path in ``entry.paths``."""
+        cwd, _ = self._entry_target(entry)
+        if entry.submodule:
+            return cwd, [os.path.relpath(path, entry.submodule) for path in entry.paths]
+        return cwd, list(entry.paths)
+
     def entry_command_filename(self, entry: GitEntry) -> str:
         """The filename as it appears in argv for this entry (inner for submodule)."""
         return self._entry_target(entry)[1]
@@ -595,21 +623,22 @@ class GIT:
 
     def load_file_diff(self, entry: GitEntry) -> str:
         """Return the diff text for a status entry (staged + unstaged combined)."""
-        cwd, name = self._entry_target(entry)
+        # Both paths of a rename, or the diff shows the new path as an added file.
+        cwd, names = self._entry_pathspec(entry)
         staged, unstaged = entry.code.staged, entry.code.unstaged
         parts = []
         if staged not in (GitStatus.UNMODIFIED, GitStatus.UNTRACKED):
-            result = self._run_in(cwd, "diff", "--cached", "--", name)
+            result = self._run_in(cwd, "diff", "--cached", "--", *names)
             if result.stdout:
                 parts.append(result.stdout)
         if unstaged not in (GitStatus.UNMODIFIED, GitStatus.UNTRACKED):
-            result = self._run_in(cwd, "diff", "--", name)
+            result = self._run_in(cwd, "diff", "--", *names)
             if result.stdout:
                 parts.append(result.stdout)
         if not parts:
             if entry.code.is_untracked:
                 return f"Untracked file: {entry.filename}"
-            return f"No diff available for {entry.filename}"
+            return f"No diff available for {entry.display_name}"
         return "\n".join(parts)
 
     def load_file_content(self, entry: GitEntry) -> str:
@@ -633,7 +662,11 @@ class GIT:
         return data.decode("utf-8", errors="replace")
 
     def load_status(self, *, collapse_untracked_dirs: bool = False) -> GitFilelist:
-        """Run git status --short and parse the output into a GitFilelist.
+        """Run git status --porcelain -z and parse the output into a GitFilelist.
+
+        `-z` because it is the only form that reports a path verbatim: the
+        line format quotes a name with a space in it and writes a rename as
+        `old -> new`, which can't be told apart from a file of that name.
 
         `--untracked-files=all` expands untracked directories to the
         individual files inside them; gitignored files are excluded by
@@ -654,13 +687,19 @@ class GIT:
 
     def _load_status_at(self, rel_root: str, *, untracked_files: str) -> list[GitEntry]:
         abs_root = os.path.join(self.path, rel_root) if rel_root else self.path
-        result = self._run_in(abs_root, "status", "--short", f"--untracked-files={untracked_files}")
+        result = self._run_in(
+            abs_root, "status", "--porcelain", "-z", f"--untracked-files={untracked_files}"
+        )
         submodules = set(self._submodule_paths(abs_root))
         entries: list[GitEntry] = []
-        for line in result.stdout.splitlines():
+        records = iter(result.stdout.split("\0"))
+        for line in records:
             if len(line) < 4:
                 continue
             name = line[3:]
+            # A rename or copy is followed by a record of its own holding the
+            # path it came from.
+            orig = next(records, None) if "R" in line[:2] or "C" in line[:2] else None
             # Submodule lines: recurse before parsing the code, since git
             # emits lowercase letters (e.g. " m") for submodule content
             # changes that aren't valid GitCode values. If the inner
@@ -692,7 +731,10 @@ class GIT:
             except ValueError:
                 continue
             prefixed = os.path.join(rel_root, name) if rel_root else name
-            entries.append(GitEntry(code, prefixed, submodule=(rel_root or None)))
+            orig_prefixed = os.path.join(rel_root, orig) if rel_root and orig else orig
+            entries.append(
+                GitEntry(code, prefixed, submodule=(rel_root or None), orig_filename=orig_prefixed)
+            )
         return entries
 
     def show_commit(self, commit_hash: str) -> str:
@@ -802,9 +844,13 @@ class GIT:
         return self._run_in(cwd, "add", "--", name)
 
     def unstage_entry(self, entry: GitEntry) -> subprocess.CompletedProcess[str]:
-        """`git restore --staged` an entry, routing into its submodule."""
-        cwd, name = self._entry_target(entry)
-        return self._run_in(cwd, "restore", "--staged", "--", name)
+        """`git restore --staged` an entry, routing into its submodule.
+
+        Both paths of a rename: given only the new one, the deletion of the
+        old path would stay staged.
+        """
+        cwd, names = self._entry_pathspec(entry)
+        return self._run_in(cwd, "restore", "--staged", "--", *names)
 
     def stage_command_for(self, entry: GitEntry) -> list[str]:
         """Argv preview for :meth:`stage_entry` (includes `-C` for submodules)."""
@@ -815,10 +861,9 @@ class GIT:
 
     def unstage_command_for(self, entry: GitEntry) -> list[str]:
         """Argv preview for :meth:`unstage_entry`."""
-        cwd, name = self._entry_target(entry)
-        if entry.submodule:
-            return ["git", "-C", cwd, "restore", "--staged", "--", name]
-        return self.unstage_command(name)
+        cwd, names = self._entry_pathspec(entry)
+        prefix = ["git", "-C", cwd] if entry.submodule else ["git"]
+        return prefix + ["restore", "--staged", "--", *names]
 
     def commit_with_selection_commands(
         self, entries: list[GitEntry], message: str
@@ -899,9 +944,12 @@ class GIT:
 
         For submodule entries, each argv is prefixed with ``-C <cwd>`` and
         uses the submodule-relative filename so the dialog matches what
-        runs.
+        runs. A rename restores both of its paths in the last shape: the old
+        one comes back from HEAD, and the new one, which HEAD doesn't have,
+        is removed from the index and the worktree.
         """
-        cwd, name = self._entry_target(entry)
+        cwd, names = self._entry_pathspec(entry)
+        name = names[-1]
         prefix = ["git", "-C", cwd] if entry.submodule else ["git"]
         code = entry.code
         if code.is_untracked:
@@ -919,7 +967,7 @@ class GIT:
                 "--staged",
                 "--worktree",
                 "--",
-                name,
+                *names,
             ]
         ]
 

@@ -5098,6 +5098,21 @@ class TestCommitFlow(unittest.TestCase):
         self.assertEqual(self._commit_screen(dialogs).prefill, "")
         self.assertEqual(app._pending_commit_externals, ["other/a.py", "other/b.py"])
 
+    def test_committing_a_rename_keeps_both_of_its_paths_staged(self):
+        """`git mv old new` is listed as one entry, but `git diff --cached
+        --name-only` names it by `new` (or by both paths, with rename
+        detection off). Neither path is an external: unstaging `new` left
+        only the deletion of `old` for the commit, and the addition of `new`
+        was re-staged afterwards for a second one."""
+        entry = GitEntry(GitCode.RENAMED_UNMODIFIED, "pkg/new.py", orig_filename="pkg/old.py")
+        app, dialogs, _ = self._app([entry], staged={"pkg/old.py", "pkg/new.py", "other/b.py"})
+
+        app.action_commit_files()
+
+        app.git.unstage_file.assert_called_once_with("other/b.py")
+        self.assertEqual(app._pending_commit_externals, ["other/b.py"])
+        self._commit_screen(dialogs)
+
     def test_commit_dialog_prefills_branch_name_when_setting_enabled(self):
         entry = GitEntry(GitCode.MODIFIED_UNMODIFIED, "pkg/a.py")
         app, dialogs, _ = self._app([entry], staged={"pkg/a.py"}, branch="feature/foo")

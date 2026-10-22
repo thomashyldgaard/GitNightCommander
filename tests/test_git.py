@@ -22,7 +22,7 @@ class TestGitStatus(unittest.TestCase):
         return result
 
     def test_load_status_returns_git_filelist_with_enum_codes(self):
-        stdout = "M  tracked.py\n?? new.txt\n"
+        stdout = "M  tracked.py\0?? new.txt\0"
         with fake_git_processes(stdout=stdout):
             entries = GIT().load_status()
 
@@ -39,6 +39,50 @@ class TestGitStatus(unittest.TestCase):
         self.assertIs(entries[1].code.staged, GitStatus.MODIFIED)
         self.assertIs(entries[1].code.unstaged, GitStatus.UNMODIFIED)
 
+    def test_load_status_reads_a_rename_as_one_entry_with_both_paths(self):
+        """`-z` reports a rename as `R  new` followed by a record holding the
+        old path, and reports names verbatim — no quoting around a space."""
+        stdout = "R  pkg/new name.py\0pkg/old.py\0 M app.py\0"
+        with fake_git_processes(stdout=stdout) as git:
+            entries = GIT().load_status()
+        self.assertIn("-z", git.commands[0])
+        self.assertEqual(
+            list(entries),
+            [
+                GitEntry(GitCode.UNMODIFIED_MODIFIED, "app.py"),
+                GitEntry(GitCode.RENAMED_UNMODIFIED, "pkg/new name.py", orig_filename="pkg/old.py"),
+            ],
+        )
+        self.assertEqual(entries[1].display_name, "pkg/old.py -> pkg/new name.py")
+
+    def test_rename_paths_carry_both_sides_but_a_copy_only_its_target(self):
+        rename = GitEntry(GitCode.RENAMED_UNMODIFIED, "new.py", orig_filename="old.py")
+        copy = GitEntry(GitCode.COPIED_UNMODIFIED, "new.py", orig_filename="old.py")
+        self.assertEqual(rename.paths, ["old.py", "new.py"])
+        self.assertEqual(copy.paths, ["new.py"])
+        self.assertEqual(GitEntry(GitCode.MODIFIED_UNMODIFIED, "a.py").paths, ["a.py"])
+
+    def test_unstaging_a_rename_restores_both_paths(self):
+        """Given only the new path, the deletion of the old one stays staged."""
+        entry = GitEntry(
+            GitCode.RENAMED_UNMODIFIED, "sub/new.py", submodule="sub", orig_filename="sub/old.py"
+        )
+        git = GIT("/repo")
+        self.assertEqual(
+            git.unstage_command_for(entry),
+            ["git", "-C", "/repo/sub", "restore", "--staged", "--", "old.py", "new.py"],
+        )
+        with fake_git_processes() as processes:
+            git.unstage_entry(entry)
+        self.assertEqual(processes.commands[0][-3:], ["--", "old.py", "new.py"])
+
+    def test_diff_of_a_rename_names_both_paths(self):
+        """Both paths let git pair them up as a rename instead of a new file."""
+        entry = GitEntry(GitCode.RENAMED_UNMODIFIED, "new.py", orig_filename="old.py")
+        with fake_git_processes(stdout="diff --git a/old.py b/new.py\n") as processes:
+            GIT().load_file_diff(entry)
+        self.assertEqual(processes.commands[0][-4:], ["--cached", "--", "old.py", "new.py"])
+
     def test_load_status_lists_every_untracked_file_by_default(self):
         with fake_git_processes() as git:
             GIT().load_status()
@@ -47,7 +91,7 @@ class TestGitStatus(unittest.TestCase):
     def test_load_status_can_collapse_untracked_directories(self):
         """Git decides which directories collapse: `normal` folds only a
         directory with nothing tracked in it, reported with a trailing `/`."""
-        with fake_git_processes(stdout="?? vendor/\n M app.py\n") as git:
+        with fake_git_processes(stdout="?? vendor/\0 M app.py\0") as git:
             entries = GIT().load_status(collapse_untracked_dirs=True)
         self.assertIn("--untracked-files=normal", git.commands[0])
         self.assertEqual(
@@ -378,6 +422,26 @@ class TestGitStatus(unittest.TestCase):
             [
                 ["git", "restore", "--staged", "--", "pkg/new.py"],
                 ["git", "clean", "-f", "--", "pkg/new.py"],
+            ],
+        )
+
+    def test_restore_commands_for_rename_restores_both_paths(self):
+        """HEAD has the old path and not the new one, so restoring both from
+        HEAD brings the old file back and removes the new one."""
+        entry = GitEntry(GitCode.RENAMED_MODIFIED, "pkg/new.py", orig_filename="pkg/old.py")
+        self.assertEqual(
+            GIT().restore_commands(entry),
+            [
+                [
+                    "git",
+                    "restore",
+                    "--source=HEAD",
+                    "--staged",
+                    "--worktree",
+                    "--",
+                    "pkg/old.py",
+                    "pkg/new.py",
+                ]
             ],
         )
 
